@@ -1,0 +1,75 @@
+# Node.js
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Environment variables
+.env
+.env.local
+.env.production
+.env.development
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Database
+dev.db
+dev.db-journal
+dating-dev.db
+dating-dev.db-journal
+*.db
+*.db-journal
+prisma/migrations/
+
+# Logs
+*.log
+logs/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Media
+**/media/video_notes/
+**/media/certificates/
+**/media/workspaces/
+*.pdf
+
+# Synapse Local
+synapse-local/
+.synapse-venv/
+
+# Mobile App (Capacitor / Android / iOS - local only, never on VM)
+frontend/android/
+frontend/ios/
+frontend/capacitor.config.json
+*.apk
+*.aab
+*.ipa
+*.jks
+*.keystore
+*.p12
+*.mobileprovision
+key.properties
+local.properties
+.gradle/
+Pods/
+DerivedData/
+# Temporary ignore for work-in-progress features (FlowPilot, AskMyNotes & WIP backend/frontend)
+LEARNPROOF_MASTER_PRODUCT_BLUEPRINT.md
+frontend/src/components/FlowPilot/
+nodejs/src/controllers/flowpilot.controller.js
+nodejs/src/services/flowpilot.service.js
+frontend/src/components/Dashboard/AskMyNotes.jsx
+frontend/src/api/socialApi.js
+nodejs/src/middleware/auth.js
+nodejs/src/routes/workspace.routes.js

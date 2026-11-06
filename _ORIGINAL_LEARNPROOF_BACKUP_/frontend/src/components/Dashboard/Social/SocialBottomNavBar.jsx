@@ -1,0 +1,129 @@
+import { Fragment } from 'react';
+import { Home, Compass, Users2, MessageCircle, User, Radio, Sparkles } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { motion } from 'framer-motion';
+import { useSocialMessageStore } from '../../../store/socialMessageStore.js';
+import { useSocialFeedStore } from '../../../store/socialFeedStore.js';
+import UserAvatar from '../../Common/UserAvatar.jsx';
+
+/**
+ * SocialBottomNavBar
+ * Rendered by DashboardLayout when the user navigated to live-rooms from
+ * the Social Hub so the Social Hub bottom bar stays visible consistently.
+ */
+export default function SocialBottomNavBar() {
+  const navigate = useNavigate();
+  const totalUnreadCount = useSocialMessageStore((state) => state.totalUnreadCount);
+  const socialUser = useSocialFeedStore((state) => state.socialUser);
+  const pendingFriendCount = useSocialFeedStore((state) => state.pendingFriendCount);
+  const clearPendingFriendCount = useSocialFeedStore((state) => state.clearPendingFriendCount);
+
+  const tabs = [
+    { id: 'home',     icon: Home,         label: 'Home',    mobileOnly: true },
+    { id: 'feed',     icon: Sparkles,     label: 'Feed' },
+    { id: 'discover', icon: Compass,      label: 'Discover' },
+    { id: 'friends',  icon: Users2,       label: 'Friends', badge: pendingFriendCount > 0 ? pendingFriendCount : null },
+    { id: 'chat',     icon: MessageCircle,label: 'Chats',   badge: totalUnreadCount > 0 ? totalUnreadCount : null },
+    { id: 'profile',  icon: User,         label: 'Profile', desktopOnly: true },
+  ];
+
+  const goToTab = (tabId) => {
+    if (tabId === 'home') {
+      navigate('/dashboard');
+      return;
+    }
+    sessionStorage.setItem('nav_source', 'social');
+    if (tabId === 'friends') {
+      clearPendingFriendCount();
+    }
+    localStorage.setItem('social_active_tab', tabId);
+
+    if (tabId === 'chat') {
+      localStorage.removeItem('social_selected_chat_contact');
+      navigate('/dashboard/social/chats');
+      return;
+    }
+
+    if (tabId === 'profile') {
+      localStorage.removeItem('social_selected_profile_id');
+      navigate('/dashboard/social/profile');
+      return;
+    }
+
+    navigate(`/dashboard/social/${tabId}`);
+  };
+
+  const isLiveRoomsActive = () => {
+    return window.location.pathname.startsWith('/dashboard/live-rooms');
+  };
+
+  return (
+    <nav className="absolute bottom-5 left-1/2 -translate-x-1/2 w-[390px] xs:w-[440px] sm:w-[520px] md:w-[600px] max-w-[95vw] z-50 bg-white/60 dark:bg-gray-950/60 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-full shadow-[0_12px_40px_-12px_rgba(0,0,0,0.15)] dark:shadow-[0_12px_40px_-12px_rgba(0,0,0,0.5)] transition-all duration-300">
+      <div className="flex items-stretch justify-around h-16 px-3.5 relative">
+        {tabs.map((tab, idx) => {
+          const Icon = tab.icon;
+
+          return (
+            <Fragment key={tab.id}>
+              <button
+                onClick={() => goToTab(tab.id)}
+                className={`relative flex flex-col items-center justify-center flex-1 h-full py-2 text-gray-400 dark:text-gray-550 touch-manipulation select-none outline-none focus:outline-none cursor-pointer ${
+                  tab.mobileOnly ? 'lg:hidden' : tab.desktopOnly ? 'hidden lg:flex' : ''
+                }`}
+              >
+                <motion.div
+                  whileTap={{ scale: 0.88 }}
+                  className="flex flex-col items-center justify-center w-full h-full relative"
+                >
+                  <div className="text-gray-400 dark:text-gray-500 hover:text-orange-500 dark:hover:text-orange-400 transition-all duration-300 flex flex-col items-center justify-center">
+                    {tab.id === 'profile' ? (
+                      <div className="w-[22px] h-[22px] rounded-full overflow-hidden border border-gray-300 dark:border-gray-600 transition-all">
+                        <UserAvatar 
+                          src={socialUser?.profilePicture || socialUser?.avatar} 
+                          name={socialUser?.name} 
+                          className="w-full h-full rounded-full" 
+                          textClassName="text-[10px] font-bold"
+                        />
+                      </div>
+                    ) : (
+                      <Icon size={22} strokeWidth={2} />
+                    )}
+                    <span className="text-[9.5px] font-bold mt-1 tracking-wide leading-none">{tab.label}</span>
+                  </div>
+                  <span className="sr-only">{tab.label}</span>
+                  {tab.badge && (
+                    <span className="absolute top-0.5 right-2 text-[9px] font-black rounded-full min-w-[15px] h-[15px] px-1 flex items-center justify-center bg-orange-500 text-white shadow-md z-20">
+                      {tab.badge}
+                    </span>
+                  )}
+                </motion.div>
+              </button>
+
+              {/* Live Rooms Globe icon — active when on live-rooms page */}
+              {idx === 2 && (
+                <button
+                  onClick={() => {
+                    sessionStorage.setItem('nav_source', 'social');
+                    navigate('/dashboard/live-rooms', { state: { from: 'social' } });
+                  }}
+                  className="relative flex flex-col items-center justify-center flex-1 h-full py-2 touch-manipulation select-none outline-none focus:outline-none cursor-pointer"
+                >
+                  <motion.div
+                    whileTap={{ scale: 0.88 }}
+                    className="flex flex-col items-center justify-center w-full h-full relative"
+                  >
+                    <div className={`transition-all duration-300 flex flex-col items-center justify-center ${isLiveRoomsActive() ? 'scale-110 text-orange-600 dark:text-orange-400 drop-shadow-[0_0_8px_rgba(249,115,22,0.3)]' : 'text-gray-400 dark:text-gray-550 hover:text-orange-500 dark:hover:text-orange-400'}`}>
+                      <Radio size={22} strokeWidth={isLiveRoomsActive() ? 2.5 : 2} />
+                      <span className="text-[9.5px] font-bold mt-1 tracking-wide leading-none">Rooms</span>
+                    </div>
+                    <span className="sr-only">Live Rooms</span>
+                  </motion.div>
+                </button>
+              )}
+            </Fragment>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}

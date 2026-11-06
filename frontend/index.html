@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/png" href="/LP_M_logo.png" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LearnProof AI - Restricted Access</title>
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      background-color: #020617;
+      color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      overflow-x: hidden;
+      position: relative;
+    }
+    .glow-top {
+      position: absolute;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 700px;
+      height: 350px;
+      background: radial-gradient(circle, rgba(225, 29, 72, 0.18) 0%, rgba(2, 6, 23, 0) 70%);
+      pointer-events: none;
+    }
+    .glow-bottom {
+      position: absolute;
+      bottom: 0;
+      right: 15%;
+      width: 450px;
+      height: 450px;
+      background: radial-gradient(circle, rgba(245, 158, 11, 0.12) 0%, rgba(2, 6, 23, 0) 70%);
+      pointer-events: none;
+    }
+    header {
+      border-bottom: 1px solid rgba(51, 65, 85, 0.6);
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(12px);
+      padding: 1rem 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: relative;
+      z-index: 10;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .brand-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #e11d48, #f59e0b);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 14px rgba(225, 29, 72, 0.4);
+    }
+    .brand h1 {
+      font-size: 1rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .badge-locked {
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      background: #4c0519;
+      color: #fb7185;
+      border: 1px solid rgba(225, 29, 72, 0.4);
+    }
+    .status-live {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.75rem;
+      color: #94a3b8;
+      font-family: monospace;
+      text-transform: uppercase;
+    }
+    .dot-ping {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #f43f5e;
+      box-shadow: 0 0 10px #f43f5e;
+    }
+    main {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem 1.5rem;
+      position: relative;
+      z-index: 10;
+    }
+    .card {
+      background: rgba(15, 23, 42, 0.92);
+      border: 1px solid rgba(51, 65, 85, 0.8);
+      border-radius: 1.25rem;
+      padding: 2.5rem 2rem;
+      max-width: 620px;
+      width: 100%;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(16px);
+      position: relative;
+      text-align: center;
+    }
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, #f43f5e, #f59e0b, #f43f5e);
+      border-radius: 1.25rem 1.25rem 0 0;
+    }
+    .shield-box {
+      width: 76px;
+      height: 76px;
+      border-radius: 1.25rem;
+      background: rgba(76, 5, 25, 0.6);
+      border: 1px solid rgba(225, 29, 72, 0.4);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 1.25rem;
+      color: #fb7185;
+    }
+    .pill-notice {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 4px 12px;
+      border-radius: 9999px;
+      background: rgba(76, 5, 25, 0.7);
+      border: 1px solid rgba(244, 63, 94, 0.4);
+      color: #fda4af;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 1rem;
+    }
+    .card h2 {
+      font-size: 1.75rem;
+      font-weight: 800;
+      color: #ffffff;
+      line-height: 1.3;
+      margin-bottom: 0.75rem;
+      letter-spacing: -0.02em;
+    }
+    .card p.description {
+      color: #cbd5e1;
+      font-size: 0.95rem;
+      line-height: 1.6;
+      margin-bottom: 1.5rem;
+    }
+    .info-table {
+      background: rgba(2, 6, 23, 0.6);
+      border: 1px solid rgba(51, 65, 85, 0.6);
+      border-radius: 0.75rem;
+      padding: 1rem;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+      text-align: left;
+      font-size: 0.8rem;
+      margin-bottom: 1.5rem;
+    }
+    .info-item label {
+      display: block;
+      color: #64748b;
+      font-family: monospace;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      margin-bottom: 2px;
+    }
+    .info-item span {
+      font-weight: 600;
+      color: #e2e8f0;
+    }
+    .actions {
+      display: flex;
+      gap: 0.75rem;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .btn {
+      padding: 0.75rem 1.25rem;
+      border-radius: 0.75rem;
+      font-size: 0.875rem;
+      font-weight: 600;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #e11d48, #be123c);
+      color: #ffffff;
+      border: none;
+      box-shadow: 0 4px 14px rgba(225, 29, 72, 0.35);
+    }
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #f43f5e, #e11d48);
+    }
+    .btn-secondary {
+      background: #1e293b;
+      color: #cbd5e1;
+      border: 1px solid #334155;
+    }
+    .btn-secondary:hover {
+      background: #334155;
+      color: #ffffff;
+    }
+    footer {
+      border-top: 1px solid rgba(51, 65, 85, 0.5);
+      background: rgba(15, 23, 42, 0.3);
+      padding: 1rem;
+      text-align: center;
+      font-size: 0.75rem;
+      color: #64748b;
+      position: relative;
+      z-index: 10;
+    }
+  </style>
+</head>
+<body>
+  <div class="glow-top"></div>
+  <div class="glow-bottom"></div>
+
+  <header>
+    <div class="brand">
+      <div class="brand-icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+        </svg>
+      </div>
+      <div>
+        <h1>LearnProof AI <span class="badge-locked">Locked</span></h1>
+      </div>
+    </div>
+    <div class="status-live">
+      <div class="dot-ping"></div>
+      <span>Access Restricted</span>
+    </div>
+  </header>
+
+  <main>
+    <div class="card">
+      <div class="shield-box">
+        <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+          <path d="M12 8v4"></path>
+          <path d="M12 16h.01"></path>
+        </svg>
+      </div>
+
+      <div>
+        <div class="pill-notice">
+          <span>Restricted Codebase Notice</span>
+        </div>
+      </div>
+
+      <h2>You cannot modify or view code without permission from repo owner.</h2>
+
+      <p class="description">
+        This platform repository has been archived and locked for competition submission.
+        Core proprietary algorithms, prompt pipelines, and internal infrastructure secrets are restricted under copyright protection.
+      </p>
+
+      <div class="info-table">
+        <div class="info-item">
+          <label>Repository Owner</label>
+          <span>Kakade Avishkar</span>
+        </div>
+        <div class="info-item">
+          <label>Platform</label>
+          <span>LearnProof AI</span>
+        </div>
+        <div class="info-item">
+          <label>Status</label>
+          <span style="color: #fbbf24;">● Locked / Protected Stubs</span>
+        </div>
+        <div class="info-item">
+          <label>Notice ID</label>
+          <span style="font-family: monospace;">LP-COMP-ARCHIVE-2026</span>
+        </div>
+      </div>
+
+      <div class="actions">
+        <a href="mailto:kakadeavishkar84@gmail.com?subject=LearnProof%20AI%20Access%20Request" class="btn btn-primary">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect width="20" height="16" x="2" y="4" rx="2"></rect>
+            <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"></path>
+          </svg>
+          Contact Repo Owner
+        </a>
+        <button onclick="navigator.clipboard.writeText('kakadeavishkar84@gmail.com'); alert('Owner email copied: kakadeavishkar84@gmail.com');" class="btn btn-secondary">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect>
+            <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path>
+          </svg>
+          Copy Owner Email
+        </button>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <p>© 2026 Kakade Avishkar. All Rights Reserved. LearnProof AI is proprietary intellectual property.</p>
+  </footer>
+
+  <script>
+    console.error("%c[ACCESS DENIED] You cannot modify or view code without permission from repo owner.", "color: #ef4444; font-size: 20px; font-weight: bold; padding: 10px; background: #0f172a; border: 2px solid #ef4444; border-radius: 8px;");
+  </script>
+</body>
+</html>

@@ -1,0 +1,6252 @@
+import { useEffect, useState, useRef, useMemo } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
+import axios from "axios";
+import socialApi from "../api/socialApi";
+import toast from "react-hot-toast";
+import {
+  PlayCircle,
+  Play,
+  ArrowLeft,
+  CheckCircle,
+  Check,
+  Clock,
+  BookOpen,
+  MessageSquare,
+  FileText,
+  Send,
+  User,
+  Sparkles,
+  Image as ImageIcon,
+  X,
+  Reply,
+  Trash2,
+  ChevronRight,
+  ChevronLeft,
+  Bot,
+  Copy,
+  Plus,
+  Minus,
+  Zap,
+  Download,
+  Share2,
+  Layers,
+  RefreshCw,
+  Shuffle,
+  Printer,
+  ChevronUp,
+  ChevronDown,
+  Gauge,
+  Code2,
+  PenTool,
+  Grid,
+  Moon
+} from "lucide-react";
+import ClassroomCodeEditor from "./Classroom/ClassroomCodeEditor";
+import HandwrittenNotebookView from "./Dashboard/HandwrittenNotebookView";
+import { convertCodeSnippet } from "../api/compilerApi";
+import { useModal } from "../context/ModalContext";
+import YouTube from 'react-youtube';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
+import { preprocessMath } from '../utils/mathPreprocessor';
+import QuizMathText from './Common/QuizMathText';
+import FlashcardsView from './Classroom/FlashcardsView';
+import ReactQuill from 'react-quill-new';
+import 'react-quill-new/dist/quill.snow.css';
+import { motion, AnimatePresence } from "framer-motion";
+import Prism from 'prismjs';
+import 'prismjs/components/prism-python';
+import 'prismjs/components/prism-javascript';
+import 'prismjs/components/prism-typescript';
+import 'prismjs/components/prism-jsx';
+import 'prismjs/components/prism-tsx';
+import 'prismjs/components/prism-c';
+import 'prismjs/components/prism-cpp';
+import 'prismjs/components/prism-java';
+import 'prismjs/components/prism-sql';
+import 'prismjs/components/prism-bash';
+import 'prismjs/components/prism-json';
+import 'prismjs/components/prism-css';
+import 'prismjs/components/prism-markup';
+
+const formatVideoDuration = (seconds) => {
+  if (!seconds || seconds <= 0) return null;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) {
+    return `${h}:${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
+  }
+  return `${m}:${s < 10 ? '0' : ''}${s}`;
+};
+
+const INDIAN_LANGS = [
+  'English', 'Hindi', 'Marathi', 'Bengali', 'Telugu',
+  'Tamil', 'Gujarati', 'Urdu', 'Kannada', 'Odia', 'Malayalam'
+];
+
+const preprocessMarkdown = preprocessMath;
+
+// Custom Modern Code Editor Component with Multi-Language Switcher & Prism Syntax Highlighting
+const CodeEditorBlock = ({ className, children, code, language, onOpenInEditor }) => {
+  const [copied, setCopied] = useState(false);
+  const [isConverting, setIsConverting] = useState(false);
+  const match = /language-([a-zA-Z0-9_+#-]+)/.exec(className || '');
+  const rawLang = language || (match ? match[1].toLowerCase() : '');
+  const langAliases = {
+    py: 'python',
+    python3: 'python',
+    js: 'javascript',
+    ts: 'typescript',
+    tsx: 'typescript',
+    jsx: 'javascript',
+    cpp: 'cpp',
+    'c++': 'cpp',
+    c: 'c',
+    cs: 'csharp',
+    java: 'java',
+    go: 'go',
+    rust: 'rust',
+    sh: 'bash',
+    bash: 'bash',
+    shell: 'bash',
+    zsh: 'bash',
+    sql: 'sql',
+    html: 'html',
+    htm: 'html',
+    markup: 'html',
+    xml: 'html',
+    css: 'html',
+    json: 'json',
+    yaml: 'yaml',
+    yml: 'yaml'
+  };
+
+  const rawCode = useMemo(() => {
+    if (typeof code === 'string' && code.trim()) return code.replace(/\n$/, '');
+    if (typeof children === 'string') return children.replace(/\n$/, '');
+    if (Array.isArray(children)) {
+      return children
+        .map(c => (typeof c === 'string' ? c : (c?.props?.children ? String(c.props.children) : '')))
+        .join('')
+        .replace(/\n$/, '');
+    }
+    return String(children || '').replace(/\n$/, '');
+  }, [children, code]);
+
+  let parsedLang = langAliases[rawLang] || rawLang || 'python';
+  // Auto-detect C++ when author used ```c tag for C++ code
+  if (parsedLang === 'c' && (
+    /#include\s*<(?:iostream|vector|algorithm|limits|string|map|set)>/i.test(rawCode) ||
+    /\bstd::/.test(rawCode) ||
+    /\bcout\b/.test(rawCode)
+  )) {
+    parsedLang = 'cpp';
+  }
+  const initialLang = parsedLang;
+
+  const [currentLang, setCurrentLang] = useState(initialLang);
+  const [displayCode, setDisplayCode] = useState(rawCode);
+  const [convertingLang, setConvertingLang] = useState(null);
+  const codeCacheRef = useRef({ [initialLang]: rawCode });
+  const lastRawCodeRef = useRef(rawCode);
+  const lastInitialLangRef = useRef(initialLang);
+
+  useEffect(() => {
+    // Only reset if the actual snippet or initial language changed from a different lesson
+    if (rawCode !== lastRawCodeRef.current || initialLang !== lastInitialLangRef.current) {
+      lastRawCodeRef.current = rawCode;
+      lastInitialLangRef.current = initialLang;
+      codeCacheRef.current = { [initialLang]: rawCode };
+      setCurrentLang(initialLang);
+      setDisplayCode(rawCode);
+    }
+  }, [rawCode, initialLang]);
+
+  const AVAILABLE_LANGS = [
+    { id: 'python', label: 'Python 3', badge: 'PYTHON' },
+    { id: 'html', label: 'HTML / CSS', badge: 'HTML' },
+    { id: 'javascript', label: 'JavaScript', badge: 'JAVASCRIPT' },
+    { id: 'typescript', label: 'TypeScript', badge: 'TYPESCRIPT' },
+    { id: 'cpp', label: 'C++ 17', badge: 'C++' },
+    { id: 'java', label: 'Java', badge: 'JAVA' },
+    { id: 'c', label: 'C (C11)', badge: 'C' }
+  ];
+
+  const handleCopy = (e) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(displayCode);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleLanguageChange = async (targetLang) => {
+    if (targetLang === currentLang || isConverting) return;
+
+    if (codeCacheRef.current[targetLang]) {
+      setCurrentLang(targetLang);
+      setDisplayCode(codeCacheRef.current[targetLang]);
+      return;
+    }
+
+    try {
+      setConvertingLang(targetLang);
+      setIsConverting(true);
+      const sourceCode = codeCacheRef.current[initialLang] || rawCode;
+      const res = await convertCodeSnippet({
+        code: sourceCode,
+        fromLanguage: initialLang,
+        toLanguage: targetLang
+      });
+      if (res && res.code) {
+        codeCacheRef.current[targetLang] = res.code;
+        setCurrentLang(targetLang);
+        setDisplayCode(res.code);
+      }
+    } catch (err) {
+      console.error('[CodeEditorBlock] Failed to convert code:', err);
+      toast.error(`Could not convert to ${AVAILABLE_LANGS.find(l => l.id === targetLang)?.label || targetLang}. You can test the original code in Code Editor.`);
+    } finally {
+      setIsConverting(false);
+      setConvertingLang(null);
+    }
+  };
+
+  const handleRunInEditor = (e) => {
+    e.stopPropagation();
+    window.dispatchEvent(new CustomEvent('learnproof:open-code-editor', {
+      detail: { code: displayCode, language: currentLang }
+    }));
+    if (onOpenInEditor) {
+      onOpenInEditor(displayCode, currentLang);
+    }
+  };
+
+  const highlightedCode = useMemo(() => {
+    try {
+      const prismKey = currentLang === 'html' ? 'markup' : currentLang;
+      if (Prism.languages[prismKey]) {
+        return Prism.highlight(displayCode, Prism.languages[prismKey], prismKey);
+      }
+      return Prism.highlight(displayCode, Prism.languages.clike || Prism.languages.javascript, 'javascript');
+    } catch {
+      return null;
+    }
+  }, [displayCode, currentLang]);
+
+  const activeDisplayLangLabel = AVAILABLE_LANGS.find(l => l.id === (isConverting && convertingLang ? convertingLang : currentLang))?.label || currentLang;
+
+  return (
+    <div
+      className="my-3 sm:my-4 rounded-xl overflow-hidden bg-slate-50 dark:bg-[#181825] border border-slate-200 dark:border-slate-800 shadow-xs text-left no-tab-swipe"
+      onTouchStart={(e) => e.stopPropagation()}
+      onTouchMove={(e) => e.stopPropagation()}
+      onTouchEnd={(e) => e.stopPropagation()}
+    >
+      {/* Code Editor Header */}
+      <div className="flex flex-wrap items-center justify-between gap-1.5 px-3 py-1.5 bg-slate-100 dark:bg-[#11111b] border-b border-slate-200 dark:border-slate-800/90 text-xs select-none">
+        <div className="flex items-center gap-2">
+          {/* Mac OS Window Dots */}
+          <div className="flex items-center gap-1.5 opacity-90">
+            <span className="w-2.5 h-2.5 rounded-full bg-[#f38ba8] inline-block"></span>
+            <span className="w-2.5 h-2.5 rounded-full bg-[#f9e2af] inline-block"></span>
+            <span className="w-2.5 h-2.5 rounded-full bg-[#a6e3a1] inline-block"></span>
+          </div>
+
+          {/* Language Selector Dropdown */}
+          <div className="relative inline-flex items-center ml-1">
+            <select
+              value={isConverting && convertingLang ? convertingLang : currentLang}
+              onChange={(e) => handleLanguageChange(e.target.value)}
+              disabled={isConverting}
+              aria-label="Change programming language"
+              className="appearance-none pl-2 pr-6 py-0.5 rounded bg-white dark:bg-slate-800/90 text-[10px] font-mono font-bold uppercase tracking-wider text-indigo-700 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800/60 cursor-pointer shadow-2xs hover:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            >
+              {AVAILABLE_LANGS.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.label}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={11} className="absolute right-1.5 text-indigo-500 pointer-events-none" />
+          </div>
+
+          {isConverting && (
+            <span className="flex items-center gap-1 text-[10px] text-indigo-600 dark:text-indigo-400 font-semibold animate-pulse">
+              <Sparkles size={11} className="animate-spin" />
+              <span>Converting to {activeDisplayLangLabel}...</span>
+            </span>
+          )}
+        </div>
+
+        {/* Right side: Run in Editor & Copy */}
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={handleRunInEditor}
+            className="flex items-center gap-1 px-2.5 py-0.5 rounded text-[10px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-100/80 dark:bg-emerald-950/60 hover:bg-emerald-200/90 dark:hover:bg-emerald-900/80 border border-emerald-300/60 dark:border-emerald-700/50 transition cursor-pointer shadow-2xs"
+            title="Open and run this code in LearnProof Code Editor"
+          >
+            <Play size={10} className="fill-current text-emerald-600 dark:text-emerald-400" />
+            <span>Run in Editor</span>
+          </button>
+
+          <button
+            onClick={handleCopy}
+            className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/70 dark:hover:bg-slate-800 transition cursor-pointer"
+            title="Copy Code"
+          >
+            {copied ? (
+              <>
+                <Check size={11} className="text-emerald-600 dark:text-emerald-400" />
+                <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Copied!</span>
+              </>
+            ) : (
+              <>
+                <Copy size={11} />
+                <span>Copy</span>
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Code Body */}
+      <div
+        className="code-editor-body p-3 sm:p-4 overflow-x-auto text-[11.5px] sm:text-xs leading-relaxed font-mono text-slate-800 dark:text-slate-100"
+        onTouchStart={(e) => e.stopPropagation()}
+        onTouchMove={(e) => e.stopPropagation()}
+        onTouchEnd={(e) => e.stopPropagation()}
+      >
+        {isConverting ? (
+          <div className="py-6 flex flex-col items-center justify-center space-y-2 text-indigo-500 dark:text-indigo-400">
+            <div className="w-5 h-5 border-2 border-indigo-400/30 border-t-indigo-500 rounded-full animate-spin"></div>
+            <span className="text-xs font-mono font-medium">Converting code to {activeDisplayLangLabel}...</span>
+          </div>
+        ) : highlightedCode ? (
+          <pre
+            className="m-0 p-0 bg-transparent font-mono whitespace-pre text-slate-800 dark:text-slate-100"
+            dangerouslySetInnerHTML={{ __html: highlightedCode }}
+          />
+        ) : (
+          <pre className="m-0 p-0 bg-transparent font-mono whitespace-pre text-slate-800 dark:text-slate-100">{displayCode}</pre>
+        )}
+      </div>
+    </div>
+  );
+};
+
+
+const cleanTopicTitle = (title, idx) => {
+  if (!title || typeof title !== 'string') return `Topic ${idx + 1}`;
+  let t = title.trim();
+  t = t.replace(/^Chapter\s*(\d+)[:\s-]*/i, 'Topic $1: ');
+  t = t.replace(/^Chapter\s*(\d+)$/i, 'Topic $1');
+  return t;
+};
+
+const parseIntuitionData = (raw) => {
+  if (!raw) return null;
+
+  const extractWithRegex = (str) => {
+    try {
+      const catMatch = str.match(/"subjectCategory"\s*:\s*"([^"]+)"/);
+      const labelMatch = str.match(/"categoryLabel"\s*:\s*"([^"]+)"/);
+      const timeMatch = str.match(/"estimatedReadTimeMinutes"\s*:\s*(\d+)/);
+
+      const unescapeRegexContent = (rawContent) => {
+        if (!rawContent) return '';
+        let c = rawContent;
+        // Protect LaTeX commands before unescaping
+        c = c.replace(/\\r(ight|ho|angle|oot|rightarrow|vert|Vert)\b/g, '___LATEX_R_$1');
+        c = c.replace(/\\t(imes|heta|au|ext|o)\b/g, '___LATEX_T_$1');
+        c = c.replace(/\\n(abla|u|eq|ot)\b/g, '___LATEX_N_$1');
+        c = c.replace(/\\b(eta|matrix|egin|oldsymbol|ar)\b/g, '___LATEX_B_$1');
+        c = c.replace(/\\f(rac|dots)\b/g, '___LATEX_F_$1');
+
+        c = c
+          .replace(/\\n/g, '\n')
+          .replace(/\\r/g, '')
+          .replace(/\\t/g, '\t')
+          .replace(/\\"/g, '"')
+          .replace(/\\\\/g, '\\');
+
+        // Restore LaTeX commands
+        c = c.replace(/___LATEX_R_(\w+)/g, '\\r$1');
+        c = c.replace(/___LATEX_T_(\w+)/g, '\\t$1');
+        c = c.replace(/___LATEX_N_(\w+)/g, '\\n$1');
+        c = c.replace(/___LATEX_B_(\w+)/g, '\\b$1');
+        c = c.replace(/___LATEX_F_(\w+)/g, '\\f$1');
+        return c;
+      };
+
+      const pageRegex = /\{\s*"pageNumber"\s*:\s*(\d+)\s*,\s*"title"\s*:\s*"([^"]+)"\s*,\s*"content"\s*:\s*"([\s\S]*?)(?="\s*\}\s*(?:,|\]))/g;
+      const pages = [];
+      let m;
+      while ((m = pageRegex.exec(str)) !== null) {
+        let content = unescapeRegexContent(m[3]);
+
+        pages.push({
+          pageNumber: parseInt(m[1], 10),
+          title: cleanTopicTitle(m[2], pages.length),
+          content: content.trim()
+        });
+      }
+
+      if (pages.length > 0) {
+        return {
+          subjectCategory: catMatch ? catMatch[1] : 'theory_humanities',
+          categoryLabel: labelMatch ? labelMatch[1] : 'Study Notes & Core Intuition',
+          estimatedReadTimeMinutes: timeMatch ? parseInt(timeMatch[1], 10) : 5,
+          totalPages: pages.length,
+          pages: pages
+        };
+      }
+    } catch (e) { }
+    return null;
+  };
+
+  let obj = null;
+  if (typeof raw === 'object') {
+    obj = raw;
+  } else if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (trimmed.includes('"pages"') || trimmed.startsWith('{')) {
+      try {
+        obj = JSON.parse(trimmed);
+      } catch (e) {
+        obj = extractWithRegex(trimmed);
+      }
+    }
+  }
+
+  // Check if obj is double-wrapped (e.g. pages[0].content contains the real JSON)
+  if (obj && Array.isArray(obj.pages) && obj.pages.length === 1 && typeof obj.pages[0].content === 'string') {
+    const innerStr = obj.pages[0].content.trim();
+    if (innerStr.includes('"pages"') && (innerStr.startsWith('{') || innerStr.startsWith('```'))) {
+      try {
+        let cleanedInner = innerStr;
+        if (/^\s*```/i.test(cleanedInner)) {
+          cleanedInner = cleanedInner.replace(/^\s*```(?:json)?\s*([\s\S]*?)\s*```/i, '$1').trim();
+        }
+        const unwrapped = JSON.parse(cleanedInner);
+        if (unwrapped && Array.isArray(unwrapped.pages) && unwrapped.pages.length > 0) {
+          obj = unwrapped;
+        }
+      } catch (e) {
+        const unwrappedRegex = extractWithRegex(innerStr);
+        if (unwrappedRegex && unwrappedRegex.pages.length > 0) {
+          obj = unwrappedRegex;
+        }
+      }
+    }
+  }
+
+  if (obj && Array.isArray(obj.pages) && obj.pages.length > 0) {
+    return {
+      subjectCategory: obj.subjectCategory || 'theory_humanities',
+      categoryLabel: obj.categoryLabel || 'Study Notes & Core Intuition',
+      estimatedReadTimeMinutes: obj.estimatedReadTimeMinutes || 5,
+      totalPages: obj.pages.length,
+      pages: obj.pages.map((p, idx) => {
+        let contentStr = typeof p.content === 'string' ? p.content.trim() : JSON.stringify(p.content);
+        if (contentStr.includes('\\n')) {
+          contentStr = contentStr.replace(/\\n/g, '\n');
+        }
+        contentStr = contentStr.replace(/^[ \t]+(```[a-zA-Z0-9_+#-]*)/gm, '$1');
+        contentStr = contentStr.replace(/([^\n`])\s*(```[a-zA-Z0-9_+#-]*)/g, '$1\n\n$2');
+        contentStr = contentStr.replace(/(```(?:[a-zA-Z0-9_+#-]+)?)[ \t]+([^\n\r])/g, '$1\n\n$2');
+        return {
+          pageNumber: p.pageNumber || idx + 1,
+          title: cleanTopicTitle(p.title, idx),
+          content: contentStr
+        };
+      })
+    };
+  }
+
+  if (typeof raw === 'string') {
+    let plainContent = raw.trim();
+    if (plainContent.includes('\\n')) {
+      plainContent = plainContent.replace(/\\n/g, '\n');
+    }
+    return {
+      subjectCategory: 'theory_humanities',
+      categoryLabel: 'Study Notes & Core Intuition',
+      estimatedReadTimeMinutes: Math.max(3, Math.round(plainContent.split(/\s+/).length / 180)),
+      totalPages: 1,
+      pages: [
+        {
+          pageNumber: 1,
+          title: 'Topic 1: Comprehensive Study Notes',
+          content: plainContent
+        }
+      ]
+    };
+  }
+
+  return null;
+};
+
+const extractFirstCodeSnippetFromIntuition = (parsed) => {
+  if (!parsed?.pages || !Array.isArray(parsed.pages)) return null;
+  const langAliases = {
+    py: 'python',
+    python3: 'python',
+    js: 'javascript',
+    node: 'javascript',
+    ts: 'typescript',
+    tsx: 'typescript',
+    jsx: 'javascript',
+    cpp: 'cpp',
+    'c++': 'cpp',
+    c: 'c',
+    cs: 'csharp',
+    java: 'java',
+    go: 'go',
+    rust: 'rust',
+    sh: 'bash',
+    bash: 'bash',
+    html: 'html',
+    htm: 'html',
+    markup: 'html',
+    xml: 'html',
+    css: 'html'
+  };
+
+  for (const page of parsed.pages) {
+    if (!page?.content) continue;
+    const match = page.content.match(/```([a-zA-Z0-9+#-]+)?\r?\n([\s\S]*?)```/);
+    if (match) {
+      const rawLang = (match[1] || 'python').toLowerCase().trim();
+      const code = match[2]?.trim();
+      if (code) {
+        return { language: langAliases[rawLang] || rawLang || 'python', code };
+      }
+    }
+  }
+  return null;
+};
+
+const getDynamicSuggestedQuestions = (video, parsedIntuition, seed = 0) => {
+  const rawTitle = video?.name || '';
+  // Clean title: remove chapter numbers, prefixes like "5.5 ", "1.2 - ", "#10 "
+  const cleanTitle = rawTitle.replace(/^[0-9]+(\.[0-9]+)*[\s\-:]+/, '').replace(/^#\d+[\s\-:]*/, '').trim() || 'this lecture';
+
+  // Extract topic titles if available
+  const topics = (parsedIntuition?.pages || [])
+    .map(p => p.title?.replace(/^Topic\s*\d+[:\s-]*/i, '').trim())
+    .filter(Boolean);
+
+  const t1 = topics[0] || cleanTitle;
+  const t2 = topics[1] || topics[0] || cleanTitle;
+  const category = parsedIntuition?.subjectCategory || 'theory';
+
+  // Construct a rich, topic-grounded question pool
+  const pool = [
+    {
+      icon: "💡",
+      text: `Can you explain ${cleanTitle} in simple terms with an intuitive analogy?`,
+      badge: "Core Intuition"
+    },
+    {
+      icon: "⚙️",
+      text: `How does ${t1} work step-by-step under the hood?`,
+      badge: "Deep Dive"
+    },
+    {
+      icon: "📝",
+      text: `What are the most common exam and technical interview questions on ${cleanTitle}?`,
+      badge: "Exam Prep"
+    },
+    category === 'coding' || /code|python|java|c\+\+|javascript|sql|os|algorithm|deadlock|thread|process|database/i.test(rawTitle)
+      ? {
+        icon: "💻",
+        text: `Can you give a clean code / pseudo-code implementation demonstrating ${t1}?`,
+        badge: "Practical Code"
+      }
+      : category === 'math_science' || /math|calculus|algebra|physics|chemistry|equation|theorem/i.test(rawTitle)
+        ? {
+          icon: "📐",
+          text: `Summarize the key mathematical formulas, variables, and step-by-step proofs for this lecture.`,
+          badge: "Formulas"
+        }
+        : {
+          icon: "⚡",
+          text: `What are the practical real-world applications and industrial trade-offs of ${t1}?`,
+          badge: "Applications"
+        },
+    {
+      icon: "⚠️",
+      text: `What common misconceptions or mistakes do students make when answering questions on ${cleanTitle}?`,
+      badge: "Common Pitfalls"
+    },
+    {
+      icon: "🔄",
+      text: `How does ${t1} compare with alternative approaches or related concepts?`,
+      badge: "Trade-offs"
+    },
+    {
+      icon: "🎯",
+      text: `What core problem does ${cleanTitle} solve and why is it important in real systems?`,
+      badge: "Big Picture"
+    },
+    {
+      icon: "🧠",
+      text: `Can you provide a quick 2-minute revision summary covering ${t2}?`,
+      badge: "Quick Revision"
+    }
+  ];
+
+  const start = (seed * 4) % pool.length;
+  const selected = [];
+  for (let i = 0; i < 4; i++) {
+    selected.push(pool[(start + i) % pool.length]);
+  }
+  return selected;
+};
+
+const extractFollowUpQuestions = (content) => {
+  if (!content) return [];
+  const followUpMatch = content.match(/(?:Suggested Next Questions|Next Recommended Questions|Recommended Follow-ups|Suggested Follow-ups|Follow-up Questions|Suggested Questions)[\s\S]*?(?:$)/i);
+  if (!followUpMatch) return [];
+
+  const section = followUpMatch[0];
+  const questions = [];
+  const lines = section.split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('-') || trimmed.startsWith('*') || trimmed.startsWith('•') || /^\d+[\.\)]/.test(trimmed)) {
+      const q = trimmed.replace(/^[-*•\d.)]+\s*/, '').replace(/[*_`#]/g, '').trim();
+      if (q && q.length > 5 && q.length < 160 && (q.endsWith('?') || q.includes('How') || q.includes('What') || q.includes('Why') || q.includes('Explain') || q.includes('Can') || q.includes('Compare') || q.includes('Give'))) {
+        questions.push(q);
+      }
+    }
+  }
+  return questions.slice(0, 3);
+};
+
+const cleanAiMessageContent = (content) => {
+  if (!content) return '';
+  // Remove the static "Suggested Next Questions" section and any preceding divider so only interactive click buttons appear below
+  return content
+    .replace(/(?:\r?\n\s*[-*_]{3,}\s*)?\r?\n\s*💡?\s*\*{0,2}(?:Suggested Next Questions|Next Recommended Questions|Recommended Follow-ups|Suggested Follow-ups|Follow-up Questions|Suggested Questions):?\*{0,2}[\s\S]*$/i, '')
+    .trim();
+};
+
+const getCategoryStyle = (category) => {
+  switch (category) {
+    case 'coding':
+      return {
+        badgeBg: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/20',
+        icon: '💻',
+        activePill: 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-emerald-500/20',
+        accentBorder: 'border-emerald-500/30'
+      };
+    case 'math_science':
+      return {
+        badgeBg: 'bg-sky-500/10 text-sky-700 dark:text-sky-300 border-sky-500/20',
+        icon: '📐',
+        activePill: 'bg-gradient-to-r from-sky-600 to-indigo-600 text-white shadow-sky-500/20',
+        accentBorder: 'border-sky-500/30'
+      };
+    case 'business_finance':
+      return {
+        badgeBg: 'bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/20',
+        icon: '📈',
+        activePill: 'bg-gradient-to-r from-amber-600 to-orange-600 text-white shadow-amber-500/20',
+        accentBorder: 'border-amber-500/30'
+      };
+    case 'tutorial_workflow':
+      return {
+        badgeBg: 'bg-cyan-500/10 text-cyan-700 dark:text-cyan-300 border-cyan-500/20',
+        icon: '🛠️',
+        activePill: 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-cyan-500/20',
+        accentBorder: 'border-cyan-500/30'
+      };
+    default:
+      return {
+        badgeBg: 'bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border-indigo-500/20',
+        icon: '📚',
+        activePill: 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-indigo-500/20',
+        accentBorder: 'border-indigo-500/30'
+      };
+  }
+};
+
+const Classroom = () => {
+
+  const { user, token, loading: authLoading } = useAuth();
+  const { confirm } = useModal();
+  const { videoId } = useParams();
+  const navigate = useNavigate();
+
+  const [video, setVideo] = useState(null);
+  const [playlist, setPlaylist] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [marking, setMarking] = useState(false);
+  const [player, setPlayer] = useState(null);
+  const playerRef = useRef(null);
+  const [playerError, setPlayerError] = useState(false);
+  const [liveProgress, setLiveProgress] = useState(0);
+  const [hasSeeked, setHasSeeked] = useState(false);
+  const [showNextOverlay, setShowNextOverlay] = useState(false);
+  const [hasCancelledOverlay, setHasCancelledOverlay] = useState(false);
+  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
+  const [playbackSpeed, setPlaybackSpeed] = useState(() => {
+    try {
+      return parseFloat(localStorage.getItem('learnproof_playback_speed') || '1');
+    } catch {
+      return 1;
+    }
+  });
+  const [showSpeedMenu, setShowSpeedMenu] = useState(false);
+  const [showBeyondSpeedModal, setShowBeyondSpeedModal] = useState(false);
+  const [speedHudVisible, setSpeedHudVisible] = useState(false);
+  const speedHudTimeoutRef = useRef(null);
+  const speedMenuRef = useRef(null);
+  const isSwitchingVideoRef = useRef(false);
+
+  const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 1.6, 1.75, 2, 2.5, 3, 3.5, 4];
+  const userSpeedRef = useRef(playbackSpeed);
+  const lastPlayProgressRef = useRef({ videoTime: 0, realTime: Date.now() });
+  const wasAppBackgroundedRef = useRef(false);
+  const consecutiveSlowCountRef = useRef(0);
+  const lastSyncCooldownRef = useRef(0);
+
+  useEffect(() => {
+    userSpeedRef.current = playbackSpeed;
+  }, [playbackSpeed]);
+
+  useEffect(() => {
+    playerRef.current = player;
+  }, [player]);
+
+  // Map any user speed to the closest rate supported by the YouTube IFrame API
+  // YouTube natively supports [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].
+  // Passing arbitrary numbers like 1.6 or >2 causes YouTube to reject it or revert to 1.0 (normal).
+  const getValidYouTubeRate = (rate, playerInstance = null) => {
+    let available = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+    const target = playerInstance || playerRef.current || player;
+    if (target && typeof target.getAvailablePlaybackRates === 'function') {
+      try {
+        const pRates = target.getAvailablePlaybackRates();
+        if (Array.isArray(pRates) && pRates.length > 0) {
+          available = pRates;
+        }
+      } catch (_) {}
+    }
+    const num = parseFloat(rate);
+    if (isNaN(num) || num <= 0) return 1;
+    if (available.includes(num)) return num;
+
+    const clamped = Math.min(Math.max(num, available[0]), available[available.length - 1]);
+    let closest = available[0];
+    let minDiff = Math.abs(clamped - closest);
+    for (const r of available) {
+      const diff = Math.abs(clamped - r);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closest = r;
+      }
+    }
+    return closest;
+  };
+
+  // Busts YouTube's internal rate-cache after mobile backgrounding/app switch
+  const resyncPlaybackSpeed = (rateToEnforce = null, playerInstance = null) => {
+    const rate = rateToEnforce !== null
+      ? rateToEnforce
+      : (userSpeedRef.current || parseFloat(localStorage.getItem('learnproof_playback_speed') || '1'));
+    const targetPlayer = playerInstance || playerRef.current || player;
+    if (!targetPlayer || typeof targetPlayer.setPlaybackRate !== 'function') return;
+
+    const ytRate = getValidYouTubeRate(rate, targetPlayer);
+    if (ytRate === 1) {
+      try {
+        targetPlayer.setPlaybackRate(1);
+      } catch (_) {}
+      return;
+    }
+
+    // Step 1: Briefly set rate to 1 to force YouTube to clear its internal rate-equality check
+    try {
+      targetPlayer.setPlaybackRate(1);
+    } catch (_) {}
+
+    // Step 2: Re-apply the target rate after 45ms so the hardware decoder is explicitly commanded
+    setTimeout(() => {
+      try {
+        if (targetPlayer && typeof targetPlayer.setPlaybackRate === 'function') {
+          targetPlayer.setPlaybackRate(ytRate);
+        }
+      } catch (_) {}
+    }, 45);
+  };
+
+  // Robust speed enforcer: applies speed to both HTML5 <video> elements and YouTube IFrame API
+  const enforcePlayerSpeed = (rateToEnforce = null, playerInstance = null) => {
+    const rate = rateToEnforce !== null
+      ? rateToEnforce
+      : (userSpeedRef.current || parseFloat(localStorage.getItem('learnproof_playback_speed') || '1'));
+    const targetPlayer = playerInstance || playerRef.current || player;
+    const ytRate = getValidYouTubeRate(rate, targetPlayer);
+
+    // 1. Direct HTML5 video elements (supports true custom rates e.g. 1.6x, 2.5x, 3x, 4x)
+    try {
+      document.querySelectorAll('video').forEach((v) => {
+        try {
+          if (v.playbackRate !== rate) v.playbackRate = rate;
+          if (v.defaultPlaybackRate !== rate) v.defaultPlaybackRate = rate;
+        } catch (_) {}
+      });
+    } catch (_) {}
+
+    // 2. YouTube IFrame API
+    if (targetPlayer && typeof targetPlayer.setPlaybackRate === 'function') {
+      try {
+        targetPlayer.setPlaybackRate(ytRate);
+      } catch (err) {
+        console.error('Failed to set YouTube playback rate:', err);
+      }
+    }
+  };
+
+  // Staggered retries to ensure playback speed takes effect even during buffering, app resume, or stream switches
+  const enforcePlayerSpeedWithRetries = (rateToEnforce = null, playerInstance = null, delays = [0, 80, 250, 600, 1200]) => {
+    delays.forEach((delay) => {
+      if (delay === 0) {
+        enforcePlayerSpeed(rateToEnforce, playerInstance);
+      } else {
+        setTimeout(() => {
+          enforcePlayerSpeed(rateToEnforce, playerInstance);
+        }, delay);
+      }
+    });
+  };
+
+  const applyPlaybackSpeed = (rate, playerInstance = player) => {
+    const targetPlayer = playerInstance || playerRef.current || player;
+    const numericRate = Math.round(parseFloat(rate) * 100) / 100;
+    setPlaybackSpeed(numericRate);
+    userSpeedRef.current = numericRate;
+    try {
+      localStorage.setItem('learnproof_playback_speed', numericRate.toString());
+    } catch (_) {}
+
+    enforcePlayerSpeedWithRetries(numericRate, targetPlayer, [0, 80, 250, 600]);
+
+    // Show extension-style floating speed HUD
+    setSpeedHudVisible(true);
+    if (speedHudTimeoutRef.current) clearTimeout(speedHudTimeoutRef.current);
+    speedHudTimeoutRef.current = setTimeout(() => {
+      setSpeedHudVisible(false);
+    }, 1100);
+  };
+
+  const handleStepSpeed = (delta) => {
+    const current = Math.round((playbackSpeed || 1) * 100) / 100;
+    const currentIndex = SPEED_OPTIONS.indexOf(current);
+    let newIndex;
+    if (currentIndex !== -1) {
+      newIndex = Math.max(0, Math.min(SPEED_OPTIONS.length - 1, currentIndex + delta));
+      applyPlaybackSpeed(SPEED_OPTIONS[newIndex]);
+    } else {
+      // Stepping from a fine-tuned speed (e.g. 1.6x -> 1.7x or 1.5x)
+      const newRate = Math.max(0.5, Math.min(4.0, Math.round((current + delta * 0.1) * 10) / 10));
+      applyPlaybackSpeed(newRate);
+    }
+  };
+
+  // Extension-style keyboard shortcuts: S (slower), D (faster), R (reset 1x), Z (rewind 5s), X (forward 5s)
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (
+        ['INPUT', 'TEXTAREA'].includes(e.target.tagName) ||
+        e.target.isContentEditable ||
+        (e.target.className && typeof e.target.className === 'string' && e.target.className.includes('ql-editor'))
+      ) {
+        return;
+      }
+
+      const key = e.key.toLowerCase();
+      if (key === 'd') {
+        e.preventDefault();
+        handleStepSpeed(1);
+      } else if (key === 's') {
+        e.preventDefault();
+        handleStepSpeed(-1);
+      } else if (key === 'r') {
+        e.preventDefault();
+        applyPlaybackSpeed(1);
+      } else if (key === 'z') {
+        e.preventDefault();
+        if (player && typeof player.getCurrentTime === 'function') {
+          player.getCurrentTime().then((t) => {
+            player.seekTo(Math.max(0, t - 5));
+          });
+        }
+      } else if (key === 'x') {
+        e.preventDefault();
+        if (player && typeof player.getCurrentTime === 'function') {
+          player.getCurrentTime().then((t) => {
+            player.seekTo(t + 5);
+          });
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [playbackSpeed, player]);
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (speedMenuRef.current && !speedMenuRef.current.contains(e.target)) {
+        setShowSpeedMenu(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('touchstart', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('touchstart', handleClickOutside);
+    };
+  }, []);
+
+  useEffect(() => {
+    isSwitchingVideoRef.current = true;
+    setHasSeeked(false);
+  }, [videoId]);
+
+  // Track continuous progress to avoid spamming the backend
+  const [lastSavedProgress, setLastSavedProgress] = useState(0);
+
+  // Tabs State
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      const isMobile = typeof window !== 'undefined' && window.innerWidth < 1024;
+      const saved = localStorage.getItem(`learnproof_active_tab_${videoId}`);
+      if (saved) return saved;
+      return isMobile ? 'playlist' : 'overview';
+    } catch {
+      return 'overview';
+    }
+  });
+
+  useEffect(() => {
+    if (videoId && activeTab) {
+      try {
+        localStorage.setItem(`learnproof_active_tab_${videoId}`, activeTab);
+      } catch (e) { }
+    }
+  }, [videoId, activeTab]);
+
+
+
+  const [noteContent, setNoteContent] = useState("");
+  const [noteFiles, setNoteFiles] = useState([]); // Saved files from server
+  const [newNoteFiles, setNewNoteFiles] = useState([]); // Pending files to upload
+  const [deletedFileIds, setDeletedFileIds] = useState([]); // IDs of server files marked for deletion
+  const [previewFile, setPreviewFile] = useState(null); // File to show in popup modal
+  const [savingNote, setSavingNote] = useState(false);
+  const latestProgressRef = useRef(0);
+  const activeVideoRef = useRef(null); // Ref for auto-scrolling
+  const playerContainerRef = useRef(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Playlist Pagination State
+  const [playlistPage, setPlaylistPage] = useState(1);
+  const ITEMS_PER_PAGE = 20;
+
+  // AI Doubt Chatbot State (Inside AI Intuition / Chatbot Tab)
+  const [aiChatMessages, setAiChatMessages] = useState(() => {
+    try {
+      const saved = localStorage.getItem(`learnproof_ai_chat_${videoId}`);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [aiChatInput, setAiChatInput] = useState('');
+  const [aiChatLoading, setAiChatLoading] = useState(false);
+  const [copiedIndex, setCopiedIndex] = useState(null);
+  const aiChatBottomRef = useRef(null);
+
+  // AI Chat Paper Style View Mode ('clean' | 'ruled' | 'grid' | 'chalkboard')
+  const [chatViewMode, setChatViewMode] = useState(() => {
+    try {
+      const saved = localStorage.getItem('learnproof_chat_view_mode');
+      if (saved === 'clean' || saved === 'ruled' || saved === 'grid' || saved === 'chalkboard') {
+        return saved;
+      }
+      const savedNotes = localStorage.getItem('learnproof_notes_view_mode');
+      if (savedNotes === 'clean' || savedNotes === 'ruled' || savedNotes === 'grid' || savedNotes === 'chalkboard') {
+        return savedNotes;
+      }
+      return 'ruled';
+    } catch {
+      return 'ruled';
+    }
+  });
+
+  const handleSetChatViewMode = (mode) => {
+    setChatViewMode(mode);
+    try {
+      localStorage.setItem('learnproof_chat_view_mode', mode);
+    } catch (e) {}
+  };
+
+  useEffect(() => {
+    // Auto-scroll to bottom of AI chat when new messages arrive or loading
+    if (activeTab === 'ai-chat') {
+      aiChatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [aiChatMessages, aiChatLoading, activeTab]);
+
+  useEffect(() => {
+    // Load persisted AI chat when changing videos
+    if (videoId) {
+      try {
+        const saved = localStorage.getItem(`learnproof_ai_chat_${videoId}`);
+        setAiChatMessages(saved ? JSON.parse(saved) : []);
+      } catch {
+        setAiChatMessages([]);
+      }
+      setAiChatInput('');
+      setAiChatLoading(false);
+    }
+  }, [videoId]);
+
+  const updateAiMessages = (newMessages) => {
+    setAiChatMessages(newMessages);
+    if (videoId) {
+      try {
+        localStorage.setItem(`learnproof_ai_chat_${videoId}`, JSON.stringify(newMessages));
+      } catch (e) {
+        console.error('Failed to save AI chat to storage', e);
+      }
+    }
+  };
+
+  const tabsContainerRef = useRef(null);
+
+  const scrollToTabs = (smooth = true) => {
+    const el = tabsContainerRef.current || document.getElementById('classroom-tabs-bar');
+    if (!el) return;
+    const behavior = smooth ? 'smooth' : 'auto';
+
+    // Desktop: Check if there's an internal scrollable container (.lg:overflow-y-auto)
+    const scrollableParent = el.closest('.lg\\:overflow-y-auto');
+    if (scrollableParent && window.innerWidth >= 1024) {
+      const parentTop = scrollableParent.getBoundingClientRect().top;
+      const elemTop = el.getBoundingClientRect().top;
+      scrollableParent.scrollTo({
+        top: scrollableParent.scrollTop + (elemTop - parentTop),
+        behavior
+      });
+      return;
+    }
+
+    // Mobile / Window: scroll so tabs bar is at top of viewport
+    el.scrollIntoView({ behavior, block: 'start' });
+  };
+
+  const scrollToVideo = () => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    const scrollableParent = document.querySelector('.lg\\:overflow-y-auto');
+    if (scrollableParent) {
+      scrollableParent.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  const handleSelectTab = (tabId, forceScroll = false) => {
+    setActiveTab(tabId);
+    if (forceScroll) {
+      setTimeout(() => {
+        scrollToTabs(true);
+      }, 60);
+    }
+  };
+
+  const handleStartNewChat = () => {
+    updateAiMessages([]);
+    setAiChatInput('');
+  };
+
+  const handleSendAiQuestion = async (customQuestion) => {
+    const question = (customQuestion || aiChatInput).trim();
+    if (!question || aiChatLoading || !video?.vid) return;
+
+    scrollToTabs(true);
+    const userMsg = { role: 'user', content: question, timestamp: new Date() };
+    const updatedWithUser = [...aiChatMessages, userMsg];
+    updateAiMessages(updatedWithUser);
+    setAiChatInput('');
+    setAiChatLoading(true);
+
+    try {
+      const token = localStorage.getItem('google_token');
+      const res = await axios.post(`${import.meta.env.VITE_BACKEND_URL}/api/video-ask-ai/`, {
+        videoId: video.vid,
+        question,
+        chatHistory: aiChatMessages.slice(-6).map(m => ({ role: m.role, content: m.content })),
+        language: selectedLanguage || 'English'
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (res.data?.success && res.data.answer) {
+        const aiMsg = { role: 'assistant', content: res.data.answer, timestamp: new Date() };
+        updateAiMessages([...updatedWithUser, aiMsg]);
+      } else {
+        throw new Error('No answer received');
+      }
+    } catch (err) {
+      console.error('Error asking AI doubt:', err);
+      toast.error('Failed to get answer from AI. Please try again.');
+      updateAiMessages([...updatedWithUser, {
+        role: 'assistant',
+        content: '⚠️ I encountered an issue connecting to the AI tutor. Please check your network and try asking again.',
+        isError: true,
+        timestamp: new Date()
+      }]);
+    } finally {
+      setAiChatLoading(false);
+    }
+  };
+
+  const handleCopyText = (text, idx) => {
+    navigator.clipboard.writeText(text);
+    setCopiedIndex(idx);
+    setTimeout(() => setCopiedIndex(null), 2000);
+  };
+
+  const handleSelectVideo = (targetVid) => {
+    if (targetVid === videoId) return;
+    isSwitchingVideoRef.current = true;
+    setShowNextOverlay(false);
+    setHasCancelledOverlay(false);
+    setIsVideoPlaying(false);
+    setHasSeeked(false);
+    setPlayerError(false);
+
+    // Optimistic switch: find video in current playlist so UI updates with 0 latency
+    const targetVideo = playlist?.videos?.find(v => v.vid === targetVid);
+    if (targetVideo) {
+      setVideo(targetVideo);
+      setLiveProgress(targetVideo.watch_progress || 0);
+      setLastSavedProgress(targetVideo.watch_progress || 0);
+    }
+    navigate(`/classroom/${targetVid}`);
+  };
+
+  const currentIdx = playlist?.videos && video ? playlist.videos.findIndex(v => v.vid === video.vid) : -1;
+  const nextVideo = (playlist?.videos && currentIdx !== -1 && currentIdx < playlist.videos.length - 1)
+    ? playlist.videos[currentIdx + 1]
+    : null;
+
+  // Lock document scroll on desktop so the browser page-level scrollbar is hidden.
+  // On mobile (< 1024px) we allow natural page scrolling.
+  useEffect(() => {
+    const lockScroll = () => {
+      if (window.innerWidth >= 1024) {
+        document.documentElement.style.overflow = 'hidden';
+        document.documentElement.style.height = '100%';
+        document.body.style.overflow = 'hidden';
+        document.body.style.height = '100%';
+      } else {
+        document.documentElement.style.overflow = '';
+        document.documentElement.style.height = '';
+        document.body.style.overflow = '';
+        document.body.style.height = '';
+      }
+    };
+    lockScroll();
+    window.addEventListener('resize', lockScroll);
+    return () => {
+      // Restore scroll when leaving classroom
+      document.documentElement.style.overflow = '';
+      document.documentElement.style.height = '';
+      document.body.style.overflow = '';
+      document.body.style.height = '';
+      window.removeEventListener('resize', lockScroll);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener("webkitfullscreenchange", handleFullscreenChange);
+    };
+  }, []);
+
+  const handleFullscreenToggle = () => {
+    const container = playerContainerRef.current;
+    if (!container) return;
+
+    if (!document.fullscreenElement) {
+      if (container.requestFullscreen) {
+        container.requestFullscreen();
+      } else if (container.webkitRequestFullscreen) {
+        container.webkitRequestFullscreen();
+      }
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen();
+      } else if (document.webkitExitFullscreen) {
+        document.webkitExitFullscreen();
+      }
+    }
+  };
+
+  useEffect(() => {
+    latestProgressRef.current = liveProgress;
+  }, [liveProgress]);
+  const [comments, setComments] = useState([]);
+  const [newComment, setNewComment] = useState("");
+  const [postingComment, setPostingComment] = useState(false);
+  const [replyTo, setReplyTo] = useState(null); // ID of comment being replied to
+
+  const [intuitionContent, setIntuitionContent] = useState("");
+  const [modelName, setModelName] = useState("");
+  const [loadingIntuition, setLoadingIntuition] = useState(false);
+  const [intuitionCountdown, setIntuitionCountdown] = useState(15);
+  const [selectedLanguage, setSelectedLanguage] = useState("English");
+  const [activeChapterIndex, setActiveChapterIndex] = useState(0);
+  const [isContinuousView, setIsContinuousView] = useState(false);
+  const [notesViewMode, setNotesViewMode] = useState(() => {
+    try {
+      const saved = localStorage.getItem('learnproof_notes_view_mode');
+      if (saved === 'clean' || saved === 'ruled' || saved === 'grid' || saved === 'chalkboard') {
+        return saved;
+      }
+      if (saved === 'standard') return 'clean';
+      if (saved === 'notebook') return 'ruled';
+      return 'ruled';
+    } catch (e) {
+      return 'ruled';
+    }
+  });
+  const isNotebookView = notesViewMode !== 'clean';
+
+  const handleSetNotesViewMode = (mode) => {
+    setNotesViewMode(mode);
+    try {
+      localStorage.setItem('learnproof_notes_view_mode', mode);
+    } catch (e) {}
+  };
+  const [copiedChapter, setCopiedChapter] = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [showNotesModal, setShowNotesModal] = useState(false);
+  const [pdfShareModalData, setPdfShareModalData] = useState(null);
+
+  const parsedIntuition = useMemo(() => parseIntuitionData(intuitionContent), [intuitionContent]);
+  const [suggestionSeed, setSuggestionSeed] = useState(0);
+  const dynamicSuggestions = useMemo(() => getDynamicSuggestedQuestions(video, parsedIntuition, suggestionSeed), [video, parsedIntuition, suggestionSeed]);
+
+  // Code Editor Tab State with persistence strictly scoped per video
+  const [editorCode, setEditorCode] = useState(() => {
+    try {
+      if (videoId) {
+        const saved = localStorage.getItem(`learnproof_code_${videoId}`);
+        if (saved !== null) return saved;
+      }
+      return '';
+    } catch {
+      return '';
+    }
+  });
+
+  const [editorLanguage, setEditorLanguage] = useState(() => {
+    try {
+      if (videoId) {
+        const saved = localStorage.getItem(`learnproof_lang_${videoId}`);
+        if (saved) return saved;
+      }
+      return 'python';
+    } catch {
+      return 'python';
+    }
+  });
+
+  // Sync editor when videoId or intuition changes
+  // If no saved code exists and intuition has not been generated, it MUST show BLANK!
+  useEffect(() => {
+    if (!videoId) return;
+    try {
+      const savedCode = localStorage.getItem(`learnproof_code_${videoId}`);
+      const savedLang = localStorage.getItem(`learnproof_lang_${videoId}`);
+      if (savedCode !== null) {
+        setEditorCode(savedCode);
+      } else {
+        const snippet = extractFirstCodeSnippetFromIntuition(parsedIntuition);
+        setEditorCode(snippet?.code || '');
+        if (snippet?.language) {
+          setEditorLanguage(snippet.language);
+        }
+      }
+      if (savedLang) {
+        setEditorLanguage(savedLang);
+      }
+    } catch (e) {}
+  }, [videoId, parsedIntuition]);
+
+  const handleEditorCodeChange = (newCode) => {
+    setEditorCode(newCode);
+    try {
+      if (videoId) localStorage.setItem(`learnproof_code_${videoId}`, newCode);
+    } catch (e) {}
+  };
+
+  const handleEditorLanguageChange = (newLang) => {
+    setEditorLanguage(newLang);
+    try {
+      if (videoId) localStorage.setItem(`learnproof_lang_${videoId}`, newLang);
+    } catch (e) {}
+  };
+
+
+  // Quiz State
+  const [quizData, setQuizData] = useState(null);
+  const [answers, setAnswers] = useState({});
+  const [timeLeft, setTimeLeft] = useState(600); // 10 min
+  const [submittingQuiz, setSubmittingQuiz] = useState(false);
+  const [quizResult, setQuizResult] = useState(null);
+  const [loadingQuiz, setLoadingQuiz] = useState(false);
+  // Quiz History:
+  // - Attempted Quiz History: Submitting a quiz stores exactly what the user selected in the database.
+  // - Immediate Review: Added an immediate "Review Answers" button after submission so users can check correct answers without leaving the results screen.
+  // - History List: Both the Dashboard and Classroom Video Quiz tab display a list of "Previous Attempts" (filtered for the specific video), which users can click to see a detailed, interactive test review.
+  const [quizHistory, setQuizHistory] = useState([]);
+  const [selectedHistoryQuiz, setSelectedHistoryQuiz] = useState(null);
+  const [loadingHistoryDetails, setLoadingHistoryDetails] = useState(false);
+
+  // 2-Part Quiz Sub-Tabs: Timed Practice Quiz vs Flashcards
+  const [quizSubTab, setQuizSubTab] = useState('quiz'); // 'quiz' | 'flashcards'
+  const [flashcardQuestions, setFlashcardQuestions] = useState([]);
+  const [loadingFlashcards, setLoadingFlashcards] = useState(false);
+  const [flashcardsStarted, setFlashcardsStarted] = useState(false);
+  const inFlightFlashcardPromiseRef = useRef(null);
+  const noteCardRef = useRef(null);
+
+  // Touch swipe handling for switching Classroom tabs on mobile
+  const [touchStart, setTouchStart] = useState(null);
+  const [touchEnd, setTouchEnd] = useState(null);
+  const minSwipeDistance = 50;
+
+  // Playlist key for scoping preferences like Code Editor mode
+  const playlistKey = useMemo(() => {
+    return playlist?.pid || playlist?.id || (playlist?.videos?.length > 0 ? `pl_${playlist.name || playlist.videos[0].vid}` : videoId);
+  }, [playlist, videoId]);
+
+  // Automatic programming/coding topic detection
+  const isCodingRelated = useMemo(() => {
+    const textToScan = [
+      playlist?.name || playlist?.title || '',
+      video?.name || video?.title || '',
+      video?.description || '',
+      intuitionContent || video?.intuition || ''
+    ].join(' ').toLowerCase();
+
+    const CODING_REGEX = /(?:\b(c|cpp|c programming|dsa|python|javascript|typescript|js|ts|java|golang|rust|swift|kotlin|php|ruby|sql|react|vue|angular|html|css|coding|programming|algorithm|algorithms|data structure|data structures|compiler|leetcode|codeforces|backend|frontend|fullstack|node\.?js|express|django|flask|spring boot|debugging|software engineering|devops|git|github|bitwise|recursion|pointers|linked list|binary tree|dynamic programming|graph algorithms|array|arrays|vector|stack|queue|trees|graphs|hashmap|oops|object oriented)\b|\bc\+\+(?=[^a-zA-Z0-9]|$))/i;
+
+    const hasCodeFences = /```(c\+\+|cpp|c|python|py|java|javascript|js|typescript|ts|html|css|go|rust|sql|php|swift|kotlin|ruby|bash|sh|json)/i.test(intuitionContent || video?.intuition || '');
+
+    return CODING_REGEX.test(textToScan) || hasCodeFences;
+  }, [playlist, video, intuitionContent]);
+
+  // User explicit override (null means auto-detect based on course content)
+  const [isCodeEditorExplicit, setIsCodeEditorExplicit] = useState(() => {
+    try {
+      const key = playlist?.pid || playlist?.id || videoId;
+      if (key) {
+        const stored = localStorage.getItem(`learnproof_code_editor_${key}`);
+        if (stored !== null) return stored === 'true';
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  });
+
+  // Sync explicit preference when playlist or video changes
+  useEffect(() => {
+    if (!playlistKey) return;
+    try {
+      const stored = localStorage.getItem(`learnproof_code_editor_${playlistKey}`);
+      if (stored !== null) {
+        setIsCodeEditorExplicit(stored === 'true');
+      } else {
+        setIsCodeEditorExplicit(null);
+      }
+    } catch (_) {}
+  }, [playlistKey]);
+
+  // Active state: explicit user choice if set, otherwise auto-detected based on subject
+  const isCodeEditorEnabled = isCodeEditorExplicit !== null ? isCodeEditorExplicit : isCodingRelated;
+
+  const toggleCodeEditorMode = (forceState = null) => {
+    const nextState = forceState !== null ? forceState : !isCodeEditorEnabled;
+    setIsCodeEditorExplicit(nextState);
+    if (playlistKey) {
+      try {
+        localStorage.setItem(`learnproof_code_editor_${playlistKey}`, nextState.toString());
+      } catch (_) {}
+    }
+    if (nextState) {
+      toast.success("Code Editor enabled for this course", { id: 'code-editor-toggle' });
+      setActiveTab('code-editor');
+      setTimeout(() => {
+        scrollToTabs(true);
+      }, 60);
+    } else {
+      toast.success("Code Editor hidden for this course", { id: 'code-editor-toggle' });
+      if (activeTab === 'code-editor') {
+        setActiveTab('intuition');
+      }
+    }
+  };
+
+  // Handle open in Code Editor from AI Notes or custom events
+  const handleOpenInCodeEditor = (snippetCode, snippetLang) => {
+    if (snippetCode) handleEditorCodeChange(snippetCode);
+    if (snippetLang) handleEditorLanguageChange(snippetLang);
+    // Explicitly enable code editor for this playlist if not already active
+    if (!isCodeEditorEnabled) {
+      setIsCodeEditorExplicit(true);
+      if (playlistKey) {
+        try {
+          localStorage.setItem(`learnproof_code_editor_${playlistKey}`, 'true');
+        } catch (_) {}
+      }
+    }
+    setActiveTab('code-editor');
+    setTimeout(() => {
+      scrollToTabs(true);
+    }, 60);
+  };
+
+  useEffect(() => {
+    const handleGlobalOpenCode = (e) => {
+      const { code, language } = e.detail || {};
+      handleOpenInCodeEditor(code, language);
+    };
+    window.addEventListener('learnproof:open-code-editor', handleGlobalOpenCode);
+    return () => window.removeEventListener('learnproof:open-code-editor', handleGlobalOpenCode);
+  }, []);
+
+  const classroomTabs = useMemo(() => [
+    ...(playlist ? [{ id: 'playlist', label: 'Playlist', shortLabel: 'Videos', icon: PlayCircle, hideOnDesktop: true }] : []),
+    { id: 'overview', label: 'Overview', shortLabel: 'Overview', icon: BookOpen },
+    { id: 'intuition', label: 'AI Notes', shortLabel: 'AI Notes', icon: Sparkles },
+    ...(isCodeEditorEnabled ? [{ id: 'code-editor', label: 'Code Editor', shortLabel: 'Code', icon: Code2 }] : []),
+    { id: 'ai-chat', label: 'Ask AI Chatbot', shortLabel: 'Chat', icon: Bot },
+    { id: 'quiz', label: 'AI Quiz & Flashcards', shortLabel: 'Quiz', icon: CheckCircle },
+    { id: 'notes', label: 'Notes', shortLabel: 'Notes', icon: FileText },
+    { id: 'discussion', label: `Discussion (${(comments && comments.length) || 0})`, shortLabel: 'Discuss', badge: (comments && comments.length) || 0, icon: MessageSquare },
+  ], [playlist, comments, isCodeEditorEnabled]);
+
+  const visibleClassroomTabs = useMemo(() => {
+    return classroomTabs.filter(t => !t.hideOnDesktop || (typeof window !== 'undefined' && window.innerWidth < 1024));
+  }, [classroomTabs]);
+
+  const handleTouchStart = (e) => {
+    // Never switch tabs via swipe when on AI Notes, AI Chat, Code Editor, Flashcards, or touching any scrollable elements/tables/code/buttons
+    if (activeTab === 'intuition' || activeTab === 'ai-chat' || activeTab === 'code-editor' || (activeTab === 'quiz' && quizSubTab === 'flashcards')) {
+      setTouchStart(null);
+      setTouchEnd(null);
+      return;
+    }
+    if (e.target?.closest?.('.no-tab-swipe, .overflow-x-auto, table, pre, code, select, button, input, textarea, .intuition-markdown')) {
+      setTouchStart(null);
+      setTouchEnd(null);
+      return;
+    }
+    setTouchEnd(null);
+    if (e.targetTouches?.[0]) {
+      setTouchStart({
+        x: e.targetTouches[0].clientX,
+        y: e.targetTouches[0].clientY
+      });
+    }
+  };
+
+  const handleTouchMove = (e) => {
+    if (activeTab === 'intuition' || activeTab === 'ai-chat' || activeTab === 'code-editor') return;
+    if (e.target?.closest?.('.no-tab-swipe, .overflow-x-auto, table, pre, code, select, button, input, textarea, .intuition-markdown')) return;
+    if (e.targetTouches?.[0]) {
+      setTouchEnd({
+        x: e.targetTouches[0].clientX,
+        y: e.targetTouches[0].clientY
+      });
+    }
+  };
+
+  const handleTouchEnd = () => {
+    if (activeTab === 'intuition' || activeTab === 'ai-chat' || activeTab === 'code-editor') {
+      setTouchStart(null);
+      setTouchEnd(null);
+      return;
+    }
+    if (!touchStart || !touchEnd) return;
+    const distanceX = touchStart.x - touchEnd.x;
+    const distanceY = touchStart.y - touchEnd.y;
+    if (Math.abs(distanceX) > Math.abs(distanceY) * 1.5 && Math.abs(distanceX) > minSwipeDistance) {
+      const idx = visibleClassroomTabs.findIndex(t => t.id === activeTab);
+      if (idx !== -1) {
+        if (distanceX > 0 && idx < visibleClassroomTabs.length - 1) {
+          // Swipe Left -> next tab
+          setActiveTab(visibleClassroomTabs[idx + 1].id);
+        } else if (distanceX < 0 && idx > 0) {
+          // Swipe Right -> previous tab
+          setActiveTab(visibleClassroomTabs[idx - 1].id);
+        }
+      }
+    }
+    setTouchStart(null);
+    setTouchEnd(null);
+  };
+
+  useEffect(() => {
+    const el = document.getElementById(`classroom-tab-${activeTab}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    }
+    if (activeTab === 'ai-chat') {
+      const timer = setTimeout(() => {
+        scrollToTabs(true);
+      }, 70);
+      return () => clearTimeout(timer);
+    }
+  }, [activeTab]);
+
+  const fetchDiscussionData = async () => {
+    try {
+      const effectiveToken = token || (typeof window !== 'undefined' ? localStorage.getItem('google_token') : null);
+      if (!effectiveToken || !videoId) return;
+
+      const safeParams = { idToken: effectiveToken, videoId, _t: Date.now() };
+
+      let noteRes;
+      try {
+        noteRes = await socialApi.get('/video-note/', {
+          params: safeParams,
+          headers: { Authorization: `Bearer ${effectiveToken}` }
+        });
+      } catch (_) {
+        noteRes = await axios.get(`${import.meta.env.VITE_BACKEND_URL}/api/video-note/?idToken=${encodeURIComponent(effectiveToken)}&videoId=${encodeURIComponent(videoId)}&_t=${Date.now()}`, {
+          headers: { Authorization: `Bearer ${effectiveToken}` }
+        });
+      }
+
+      setNoteContent(noteRes.data.content || "");
+      if (noteRes.data.files && noteRes.data.files.length > 0) {
+        setNoteFiles(noteRes.data.files.map(f => ({
+          id: f.id,
+          url: f.file.startsWith('http') ? f.file : `${import.meta.env.VITE_BACKEND_URL}/${f.file}`,
+          name: f.original_name || f.file.split('/').pop()
+        })));
+      } else {
+        setNoteFiles([]);
+      }
+
+      let commentRes;
+      try {
+        commentRes = await socialApi.get('/video-comment/', {
+          params: safeParams,
+          headers: { Authorization: `Bearer ${effectiveToken}` }
+        });
+      } catch (_) {
+        commentRes = await axios.get(`${import.meta.env.VITE_BACKEND_URL}/api/video-comment/?idToken=${encodeURIComponent(effectiveToken)}&videoId=${encodeURIComponent(videoId)}&_t=${Date.now()}`, {
+          headers: { Authorization: `Bearer ${effectiveToken}` }
+        });
+      }
+
+      setComments(commentRes.data || []);
+    } catch (err) {
+      console.error("Failed to fetch notes or comments", err);
+    }
+  };
+
+  const fetchIntuition = async (lang = null, forceRefresh = false) => {
+    // If a specific language is requested or forceRefresh, we fetch
+    if (!lang && !forceRefresh && intuitionContent) return;
+
+    const effectiveToken = token || (typeof window !== 'undefined' ? localStorage.getItem("google_token") : null);
+    if (!effectiveToken || !videoId) return;
+
+    setLoadingIntuition(true);
+    if (lang) setSelectedLanguage(lang); // Track the user's choice
+
+    try {
+      const payload = {
+        idToken: effectiveToken,
+        videoId,
+        targetLanguage: lang || selectedLanguage || 'English',
+        refresh: forceRefresh ? 'true' : 'false',
+        _t: Date.now()
+      };
+
+      let res;
+      try {
+        // Preferred: POST avoids iOS query length / encoding issues in WKWebView & CapacitorHttp
+        res = await socialApi.post('/video-intuition/', payload);
+      } catch (postErr) {
+        try {
+          // Fallback A: socialApi GET with native CapacitorHttp
+          res = await socialApi.get('/video-intuition/', {
+            params: payload,
+            headers: { Authorization: `Bearer ${effectiveToken}` }
+          });
+        } catch (apiErr) {
+          // Fallback B: direct axios with URLSearchParams and safe encoding
+          const queryParams = new URLSearchParams({
+            idToken: effectiveToken,
+            videoId: videoId,
+            ...(lang ? { targetLanguage: lang } : {}),
+            ...(forceRefresh ? { refresh: 'true' } : {}),
+            _t: Date.now().toString()
+          }).toString();
+          res = await axios.get(`${import.meta.env.VITE_BACKEND_URL}/api/video-intuition/?${queryParams}`, {
+            headers: { Authorization: `Bearer ${effectiveToken}` }
+          });
+        }
+      }
+
+      if (res?.data) {
+        setIntuitionContent(res.data.content);
+        setModelName(res.data.model_name || "");
+        setActiveChapterIndex(0);
+        if (forceRefresh) {
+          toast.success("Regenerated deep, multi-topic study notes!");
+        }
+
+        // If no custom code is saved for this video, populate from generated intuition if code exists
+        try {
+          const currentSaved = localStorage.getItem(`learnproof_code_${videoId}`);
+          if (currentSaved === null || currentSaved === '') {
+            const parsed = parseIntuitionData(res.data.content);
+            const snippet = extractFirstCodeSnippetFromIntuition(parsed);
+            if (snippet && snippet.code) {
+              setEditorCode(snippet.code);
+              setEditorLanguage(snippet.language || 'python');
+              localStorage.setItem(`learnproof_code_${videoId}`, snippet.code);
+              if (snippet.language) {
+                localStorage.setItem(`learnproof_lang_${videoId}`, snippet.language);
+              }
+            }
+          }
+        } catch (_) {}
+      }
+    } catch (err) {
+      console.error("Failed to fetch intuition", err);
+      toast.error("Failed to generate intuition.");
+    } finally {
+      setLoadingIntuition(false);
+    }
+  };
+
+  const handleCopyChapter = (content) => {
+    if (!content) return;
+    navigator.clipboard.writeText(content);
+    setCopiedChapter(true);
+    setTimeout(() => setCopiedChapter(false), 2000);
+  };
+
+  const handleTopicChange = (newIndex) => {
+    setActiveChapterIndex(newIndex);
+    if (noteCardRef.current) {
+      const rect = noteCardRef.current.getBoundingClientRect();
+      if (rect.top < 80) {
+        noteCardRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
+  };
+
+  const handleCopyAllNotes = () => {
+    if (!parsedIntuition || !parsedIntuition.pages || parsedIntuition.pages.length === 0) {
+      toast.error("No notes available to copy");
+      return;
+    }
+    const fullText = `# ${video?.name || 'Lecture Study Notes'}\n\n` +
+      parsedIntuition.pages.map((p, i) => `## Topic ${i + 1}: ${p.title}\n\n${p.content}`).join('\n\n---\n\n');
+    navigator.clipboard.writeText(fullText);
+    toast.success("All study notes copied to clipboard!");
+  };
+
+  const handlePrintStudyNotes = async () => {
+    if (!parsedIntuition || !parsedIntuition.pages || parsedIntuition.pages.length === 0) {
+      toast.error("Please generate study notes first.");
+      return;
+    }
+
+    const isMobile = (typeof window !== 'undefined' && window.innerWidth < 768) || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    if (isMobile) {
+      handleDownloadPdf();
+      return;
+    }
+
+    // On Desktop / Laptop browsers, trigger native print with print stylesheet
+    window.print();
+  };
+
+  const blobToBase64 = (blob) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const res = reader.result;
+        if (typeof res === 'string') {
+          resolve(res.includes(',') ? res.split(',')[1] : res);
+        } else {
+          resolve('');
+        }
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  };
+
+  const downloadOrSharePdf = async (pdfBlob, fileName, toastId) => {
+    const isCapacitorNative = typeof window !== 'undefined' && !!window.Capacitor?.isNativePlatform?.();
+
+    // 1. Capacitor Native (iOS / Android Mobile App)
+    // Uses native Filesystem to write to disk, then prompts native OS Share Sheet (Save to Files / Downloads)
+    if (isCapacitorNative) {
+      try {
+        const { Filesystem, Directory } = await import('@capacitor/filesystem');
+        const { Share } = await import('@capacitor/share');
+        const base64Data = await blobToBase64(pdfBlob);
+
+        const writeResult = await Filesystem.writeFile({
+          path: fileName,
+          data: base64Data,
+          directory: Directory.Cache
+        });
+
+        await Share.share({
+          title: fileName,
+          url: writeResult.uri,
+          dialogTitle: 'Save or Share PDF Notes'
+        });
+
+        toast.success("PDF saved / shared successfully!", { id: toastId, duration: 4000 });
+        return true;
+      } catch (capErr) {
+        if (capErr?.name === 'AbortError' || capErr?.message?.includes('canceled') || capErr?.message?.includes('cancelled')) {
+          toast.dismiss(toastId);
+          return true;
+        }
+        console.warn("Capacitor Filesystem/Share failed, falling back to Web APIs:", capErr);
+      }
+    }
+
+    const isIOS = typeof navigator !== 'undefined' && /iPhone|iPad|iPod/i.test(navigator.userAgent);
+    const isAndroid = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
+    const isMobile = isIOS || isAndroid || (typeof window !== 'undefined' && window.innerWidth < 768);
+
+    // 2. Mobile Web: Use Web Share API (native iOS / Android Share Sheet)
+    // Allows user on iPhone to tap "Save to Files" or AirDrop, and on Android to tap "Save to Downloads" or Drive
+    if (isMobile && typeof navigator !== 'undefined' && typeof File !== 'undefined' && navigator.canShare) {
+      try {
+        const file = new File([pdfBlob], fileName, { type: 'application/pdf' });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            files: [file],
+            title: fileName,
+            text: 'LearnProof AI Study Notes'
+          });
+          toast.success("PDF saved / shared successfully!", { id: toastId, duration: 4000 });
+          return true;
+        }
+      } catch (shareErr) {
+        if (shareErr.name === 'AbortError') {
+          // User dismissed or swiped away the share sheet - clean dismiss without error
+          toast.dismiss(toastId);
+          return true;
+        }
+        console.warn("Mobile Web Share failed, falling back to direct blob view/download:", shareErr);
+      }
+    }
+
+    // 3. Direct Blob fallback
+    const blobUrl = URL.createObjectURL(pdfBlob);
+
+    // On iOS Safari: Programmatic clicks on <a download> with blob URLs are ignored by WebKit.
+    // Opening the blob URL in a new window/tab displays iOS Safari's native PDF reader,
+    // which has the native iOS Share icon to "Save to Files" or AirDrop.
+    if (isIOS) {
+      try {
+        const newWin = window.open(blobUrl, '_blank');
+        if (!newWin || newWin.closed || typeof newWin.closed === 'undefined') {
+          window.location.href = blobUrl;
+        }
+        toast.success("PDF opened. Tap the Share icon to Save to Files!", { id: toastId, duration: 5000 });
+        return true;
+      } catch (iosErr) {
+        console.error("iOS blob navigation failed:", iosErr);
+        window.location.href = blobUrl;
+        return true;
+      }
+    }
+
+    // 4. Desktop and Android browsers: Standard programmatic <a download>
+    try {
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        if (document.body.contains(a)) document.body.removeChild(a);
+        URL.revokeObjectURL(blobUrl);
+      }, 10000);
+      toast.success("PDF Downloaded successfully!", { id: toastId, duration: 4000 });
+      return true;
+    } catch (downloadErr) {
+      console.error("Direct download anchor failed:", downloadErr);
+      window.open(blobUrl, '_blank');
+      toast.success("PDF opened in new tab!", { id: toastId, duration: 4000 });
+      return true;
+    }
+  };
+
+  const handleDownloadPdf = async () => {
+    if (!parsedIntuition || !parsedIntuition.pages || parsedIntuition.pages.length === 0) {
+      toast.error("Please generate study notes first.");
+      return;
+    }
+
+    const printElement = document.getElementById('printable-study-guide-source') || document.getElementById('printable-study-guide');
+    setDownloadingPdf(true);
+
+    const isNotebook = notesViewMode !== 'clean';
+    const isDarkPaper = notesViewMode === 'chalkboard';
+    const paperBgColor = notesViewMode === 'chalkboard'
+      ? '#0b1329'
+      : (notesViewMode === 'ruled' ? '#fdfbf7' : (notesViewMode === 'grid' ? '#faf9f5' : '#ffffff'));
+
+    const toastId = toast.loading(
+      isNotebook
+        ? `Compiling A4 handwritten ${notesViewMode} notebook PDF...`
+        : "Generating high-quality textbook PDF with math formulas..."
+    );
+
+    try {
+      const activeToken = token || localStorage.getItem('google_token') || '';
+      const titleStr = video?.name || 'Lecture Study Notes';
+      const modeSuffix = isNotebook ? `_Notebook_${notesViewMode}` : '_Study_Notes';
+      const fileName = `${titleStr.replace(/[^a-z0-9]/gi, '_').slice(0, 45)}${modeSuffix}.pdf`;
+
+      let downloaded = false;
+
+      // 1. High-Fidelity Client-Side Render using html2canvas-pro & jsPDF (natively supports Tailwind v4 oklch colors)
+      if (printElement && typeof window !== 'undefined') {
+        try {
+          const html2canvasModule = await import('html2canvas-pro');
+          const html2canvas = html2canvasModule.default || html2canvasModule;
+          const { jsPDF } = await import('jspdf');
+
+          const cards = printElement.querySelectorAll('.topic-page-card');
+          if (cards && cards.length > 0) {
+            const pdf = new jsPDF('p', 'mm', 'a4');
+            const pageWidth = 210;
+            const pageHeight = 297;
+            const marginX = 12; // 12mm left & right margins
+            const marginY = 12; // 12mm top & bottom margins
+            const contentWidth = pageWidth - marginX * 2; // 186mm
+            const maxContentHeight = pageHeight - marginY * 2; // 273mm
+
+            // Helper to scan for safe horizontal whitespace gaps between text & math elements
+            const findCleanBreakPoint = (sourceCanvas, startY, targetY) => {
+              const minSearchY = Math.max(startY + 50, Math.floor(targetY - (targetY - startY) * 0.25));
+              const searchHeight = Math.floor(targetY - minSearchY);
+              if (searchHeight <= 0) return targetY;
+
+              try {
+                const ctx = sourceCanvas.getContext('2d');
+                const width = sourceCanvas.width;
+                const imgData = ctx.getImageData(0, minSearchY, width, searchHeight);
+                const data = imgData.data;
+
+                let bestY = targetY;
+                let minDarkPixels = Infinity;
+
+                // Scan columns avoiding the left margin line (first ~12% of card width) and right edge
+                const marginOffset = Math.floor(width * 0.12);
+                const endCol = Math.floor(width * 0.92);
+
+                // Scan backwards from bottom to top of search zone
+                for (let row = searchHeight - 1; row >= 0; row--) {
+                  let darkPixels = 0;
+                  const rowOffset = row * width * 4;
+
+                  for (let col = marginOffset; col < endCol; col += 6) {
+                    const idx = rowOffset + col * 4;
+                    const r = data[idx];
+                    const g = data[idx + 1];
+                    const b = data[idx + 2];
+                    const a = data[idx + 3];
+
+                    // On chalkboard: ink is bright chalk. On light paper: ink is dark text.
+                    // Background ruled/grid lines have luminance > 200, so they won't trigger darkPixels.
+                    const isInk = isDarkPaper
+                      ? (a > 60 && (r > 120 || g > 120 || b > 120))
+                      : (a > 60 && ((r + g + b) / 3 < 160));
+
+                    if (isInk) {
+                      darkPixels++;
+                      if (darkPixels > 10) break;
+                    }
+                  }
+
+                  // Pure clean gap found between lines/elements
+                  if (darkPixels === 0) {
+                    return minSearchY + row;
+                  }
+
+                  if (darkPixels < minDarkPixels) {
+                    minDarkPixels = darkPixels;
+                    bestY = minSearchY + row;
+                  }
+                }
+
+                return bestY;
+              } catch (err) {
+                console.warn("Clean break scan fallback:", err);
+                return targetY;
+              }
+            };
+
+            let isPdfFirstPage = true;
+
+            for (let i = 0; i < cards.length; i++) {
+              const card = cards[i];
+
+              // High-resolution capture (scale: 2) with fixed Desktop A4 textbook width (800px)
+              // This ensures that even when downloading from a mobile phone, the PDF renders in wide desktop format
+              // with dense academic paragraphs, compact code blocks, and 75% fewer pages!
+              const DESKTOP_WIDTH_PX = 800;
+
+              const canvas = await html2canvas(card, {
+                scale: 2,
+                width: DESKTOP_WIDTH_PX,
+                windowWidth: 1200,
+                useCORS: true,
+                logging: false,
+                backgroundColor: paperBgColor,
+                onclone: (clonedDoc) => {
+                  clonedDoc.body.style.width = '1200px';
+
+                  const clonedSource = clonedDoc.getElementById('printable-study-guide-source');
+                  if (clonedSource) {
+                    clonedSource.style.position = 'static';
+                    clonedSource.style.opacity = '1';
+                    clonedSource.style.visibility = 'visible';
+                    clonedSource.style.zIndex = '1';
+                    clonedSource.style.width = `${DESKTOP_WIDTH_PX}px`;
+                    clonedSource.style.minWidth = `${DESKTOP_WIDTH_PX}px`;
+                    clonedSource.style.maxWidth = `${DESKTOP_WIDTH_PX}px`;
+                  }
+
+                  if (isDarkPaper) {
+                    clonedDoc.documentElement.classList.add('dark');
+                    clonedDoc.body.classList.add('dark');
+                    clonedDoc.body.style.backgroundColor = '#0b1329';
+                  } else {
+                    clonedDoc.documentElement.classList.remove('dark');
+                    clonedDoc.body.classList.remove('dark');
+                    clonedDoc.body.style.backgroundColor = paperBgColor;
+                  }
+
+                  const clonedCards = clonedDoc.querySelectorAll('.topic-page-card');
+                  clonedCards.forEach((c) => {
+                    c.style.width = `${DESKTOP_WIDTH_PX}px`;
+                    c.style.minWidth = `${DESKTOP_WIDTH_PX}px`;
+                    c.style.maxWidth = `${DESKTOP_WIDTH_PX}px`;
+                    c.style.margin = '0 auto';
+                    c.style.boxSizing = 'border-box';
+                    c.style.borderRadius = '16px';
+
+                    if (!isNotebook) {
+                      c.classList.remove('dark');
+                      c.style.backgroundColor = '#ffffff';
+                      c.style.color = '#0f172a';
+                      c.style.padding = '28px 36px';
+
+                      // Ensure inner prose typography is formatted for desktop textbook density
+                      const prose = c.querySelector('.prose');
+                      if (prose) {
+                        prose.style.fontSize = '13.5px';
+                        prose.style.lineHeight = '1.65';
+                        prose.style.maxWidth = '100%';
+                      }
+                    } else {
+                      c.style.padding = '24px 32px';
+                    }
+                  });
+                }
+              });
+
+              const pxPerMm = canvas.width / contentWidth;
+              const maxPagePx = Math.floor(maxContentHeight * pxPerMm);
+
+              let currentY = 0;
+
+              while (currentY < canvas.height) {
+                const remainingPx = canvas.height - currentY;
+
+                if (!isPdfFirstPage) {
+                  pdf.addPage();
+                }
+                isPdfFirstPage = false;
+
+                if (remainingPx <= maxPagePx) {
+                  // Final slice of this card fits comfortably on the current page
+                  const sliceHeightPx = remainingPx;
+                  const sliceHeightMm = (sliceHeightPx * contentWidth) / canvas.width;
+
+                  const sliceCanvas = document.createElement('canvas');
+                  sliceCanvas.width = canvas.width;
+                  sliceCanvas.height = sliceHeightPx;
+                  const sliceCtx = sliceCanvas.getContext('2d');
+                  sliceCtx.fillStyle = paperBgColor;
+                  sliceCtx.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height);
+                  sliceCtx.drawImage(
+                    canvas,
+                    0, currentY, canvas.width, sliceHeightPx,
+                    0, 0, canvas.width, sliceHeightPx
+                  );
+
+                  const sliceData = sliceCanvas.toDataURL(isDarkPaper ? 'image/png' : 'image/jpeg', 0.96);
+                  pdf.addImage(sliceData, isDarkPaper ? 'PNG' : 'JPEG', marginX, marginY, contentWidth, sliceHeightMm);
+                  currentY = canvas.height;
+                } else {
+                  // Card is taller than 1 page: cleanly break at whitespace between paragraphs/lines
+                  const targetBreakY = currentY + maxPagePx;
+                  const cleanBreakY = findCleanBreakPoint(canvas, currentY, targetBreakY);
+                  const sliceHeightPx = Math.max(100, cleanBreakY - currentY);
+                  const sliceHeightMm = (sliceHeightPx * contentWidth) / canvas.width;
+
+                  const sliceCanvas = document.createElement('canvas');
+                  sliceCanvas.width = canvas.width;
+                  sliceCanvas.height = sliceHeightPx;
+                  const sliceCtx = sliceCanvas.getContext('2d');
+                  sliceCtx.fillStyle = paperBgColor;
+                  sliceCtx.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height);
+                  sliceCtx.drawImage(
+                    canvas,
+                    0, currentY, canvas.width, sliceHeightPx,
+                    0, 0, canvas.width, sliceHeightPx
+                  );
+
+                  const sliceData = sliceCanvas.toDataURL(isDarkPaper ? 'image/png' : 'image/jpeg', 0.96);
+                  pdf.addImage(sliceData, isDarkPaper ? 'PNG' : 'JPEG', marginX, marginY, contentWidth, sliceHeightMm);
+                  currentY += sliceHeightPx;
+                }
+              }
+            }
+
+            // Elegant footer with page numbers
+            const totalPdfPages = pdf.internal.getNumberOfPages();
+            for (let p = 1; p <= totalPdfPages; p++) {
+              pdf.setPage(p);
+              pdf.setFontSize(8);
+              pdf.setTextColor(148, 163, 184);
+              const footerLabel = isNotebook
+                ? `LearnProof AI Digital Notebook • Page ${p} of ${totalPdfPages}`
+                : `LearnProof AI Study Guide • Page ${p} of ${totalPdfPages}`;
+              pdf.text(
+                footerLabel,
+                pageWidth / 2,
+                pageHeight - 5,
+                { align: 'center' }
+              );
+            }
+
+            const pdfBlob = pdf.output('blob');
+            downloaded = await downloadOrSharePdf(pdfBlob, fileName, toastId);
+          }
+        } catch (clientErr) {
+          console.warn("Client-side PDF generation failed, falling back to server:", clientErr);
+        }
+      }
+
+      // 2. Fallback to server if client-side rendering was not available or failed
+      if (!downloaded) {
+        const response = await axios.post(
+          `${import.meta.env.VITE_BACKEND_URL}/api/classroom/prepare-notes-pdf`,
+          {
+            title: titleStr,
+            pages: parsedIntuition.pages,
+            subjectCategory: parsedIntuition.subjectCategory || parsedIntuition.categoryLabel || 'Digital Study Notes',
+            idToken: activeToken
+          },
+          { headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {} }
+        );
+
+        if (response.data?.pdfBase64) {
+          const binaryStr = atob(response.data.pdfBase64);
+          const bytes = new Uint8Array(binaryStr.length);
+          for (let i = 0; i < binaryStr.length; i++) {
+            bytes[i] = binaryStr.charCodeAt(i);
+          }
+          const pdfBlob = new Blob([bytes], { type: 'application/pdf' });
+          downloaded = await downloadOrSharePdf(pdfBlob, fileName, toastId);
+        } else if (response.data?.downloadUrl) {
+          window.open(`${import.meta.env.VITE_BACKEND_URL}${response.data.downloadUrl}`, '_blank');
+          toast.success("PDF opened in new tab!", { id: toastId, duration: 4000 });
+          downloaded = true;
+        }
+      }
+
+      // 3. Immediately close preview modal so user is back on page
+      setShowNotesModal(false);
+      setPdfShareModalData(null);
+    } catch (err) {
+      console.error("PDF preparation failed:", err);
+      toast.error("Failed to prepare PDF. Please try again.", { id: toastId });
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
+
+
+  const fetchQuizHistory = async () => {
+    try {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'https://api.learnproofai.com';
+      let data = [];
+      try {
+        const res = await axios.post(`${backendUrl}/api/quiz-history/`, { idToken: token }, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        data = res.data;
+      } catch (_) {
+        const safeToken = encodeURIComponent(token || '');
+        const res = await axios.get(`${backendUrl}/api/quiz-history/?idToken=${safeToken}&_t=${Date.now()}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        data = res.data;
+      }
+      // Only keep history relevant to this specific video
+      const historyForVideo = (data || []).filter(q => {
+        // Try all possible matches to be super resilient
+        const matchesVid = q.video?.vid && String(q.video.vid) === String(videoId);
+        const matchesDbId = video?.id && q.videoId === video.id;
+        const matchesRawVid = q.videoId && String(q.videoId) === String(videoId); // Fallback
+
+        return (matchesVid || matchesDbId || matchesRawVid) && q.score !== null;
+      });
+      setQuizHistory(historyForVideo);
+    } catch (err) {
+      console.error("Failed to fetch quiz history", err);
+    }
+  };
+
+  const handleDeleteQuizHistory = async (id) => {
+    if (!id || !token) return;
+    if (!window.confirm("Are you sure you want to delete this quiz attempt?")) return;
+
+    try {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'https://api.learnproofai.com';
+      const safeToken = encodeURIComponent(token || '');
+      await axios.delete(`${backendUrl}/api/quiz-history/${id}?idToken=${safeToken}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success("Quiz attempt deleted");
+      if (selectedHistoryQuiz?.id === id) {
+        setSelectedHistoryQuiz(null);
+      }
+      fetchQuizHistory();
+    } catch (err) {
+      console.error("Failed to delete quiz history attempt:", err);
+      toast.error("Failed to delete quiz attempt");
+    }
+  };
+
+  const handleSelectHistoryQuiz = async (hist) => {
+    if (!hist) return;
+
+    // Check if questions are already present and non-empty
+    let hasQuestions = false;
+    try {
+      if (hist.questions) {
+        const parsed = typeof hist.questions === 'string' ? JSON.parse(hist.questions) : hist.questions;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          hasQuestions = true;
+          setSelectedHistoryQuiz({ ...hist, questions: parsed });
+          return;
+        }
+      }
+    } catch (_) {}
+
+    setSelectedHistoryQuiz(hist);
+    setLoadingHistoryDetails(true);
+    try {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'https://api.learnproofai.com';
+      const safeToken = encodeURIComponent(token || '');
+      const res = await axios.get(`${backendUrl}/api/quiz-history/${hist.id}?idToken=${safeToken}&_t=${Date.now()}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.data) {
+        setSelectedHistoryQuiz(res.data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch quiz attempt details:", err);
+      toast.error("Failed to load attempt details");
+    } finally {
+      setLoadingHistoryDetails(false);
+    }
+  };
+
+  const handleSeekToTime = (timeStr) => {
+    if (!timeStr) return;
+    const parts = timeStr.split(':').map(Number);
+    let seconds = 0;
+    if (parts.length === 2) {
+      seconds = parts[0] * 60 + parts[1];
+    } else if (parts.length === 3) {
+      seconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
+    }
+    if (player && typeof player.seekTo === 'function') {
+      player.seekTo(seconds, true);
+      if (typeof player.playVideo === 'function') {
+        player.playVideo();
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  const formattedVideoDescription = useMemo(() => {
+    if (!video?.description) return "";
+    let cleaned = video.description;
+    // 1. Separate divider lines (---, ===, ___, etc.) with double newlines so Markdown treats them as <hr>
+    // instead of Setext heading markers for the preceding line
+    cleaned = cleaned.replace(/([^\n])\n\s*([-=_*━—─]{3,})\s*(?=\n|$)/g, '$1\n\n---\n\n');
+    cleaned = cleaned.replace(/(^|\n)\s*([-=_*━—─]{3,})\s*\n([^\n])/g, '$1---\n\n$3');
+    return cleaned;
+  }, [video?.description]);
+
+  if (authLoading) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-orange-50 dark:bg-gray-900 text-orange-600 dark:text-orange-400">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-10 h-10 border-4 border-orange-500 border-t-transparent rounded-full animate-spin"></div>
+          <span className="text-xl font-semibold">Resuming session...</span>
+        </div>
+      </div>
+    );
+  }
+
+  const handleSaveNote = async () => {
+    setSavingNote(true);
+    try {
+      const formData = new FormData();
+      formData.append('idToken', token);
+      formData.append('videoId', videoId);
+      formData.append('content', noteContent);
+
+      // Append array of new files
+      newNoteFiles.forEach(file => {
+        formData.append('new_files', file);
+      });
+
+      // Append array of deleted file IDs
+      if (deletedFileIds.length > 0) {
+        formData.append('deleted_file_ids', JSON.stringify(deletedFileIds));
+      }
+
+      const res = await axios.post(`${import.meta.env.VITE_BACKEND_URL}/api/video-note/`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data'
+        }
+      });
+
+      // Sync back down with exact server state
+      if (res.data.files) {
+        setNoteFiles(res.data.files.map(f => ({
+          id: f.id,
+          url: f.file.startsWith('http') ? f.file : `${import.meta.env.VITE_BACKEND_URL}/${f.file}`,
+          name: f.original_name || f.file.split('/').pop()
+        })));
+      } else {
+        setNoteFiles([]);
+      }
+      setNewNoteFiles([]); // Clear pending uploads
+      setDeletedFileIds([]); // Clear pending deletions
+    } catch (err) {
+      toast.error("Failed to save note");
+    } finally {
+      setSavingNote(false);
+    }
+  };
+
+  const handlePostComment = async () => {
+    if (!newComment.trim()) return;
+    setPostingComment(true);
+    try {
+      const res = await axios.post(`${import.meta.env.VITE_BACKEND_URL}/api/video-comment/`, {
+        idToken: token,
+        videoId: videoId,
+        content: newComment,
+        parent_id: replyTo // Include parent if replying
+      });
+
+      if (replyTo) {
+        // Find parent and add reply locally (or just re-fetch)
+        // For simplicity and to ensure correct ordering, let's re-fetch or update existing tree
+        setComments(comments.map(c => {
+          if (c.id === replyTo) {
+            return { ...c, replies: [...(c.replies || []), res.data] };
+          }
+          return c;
+        }));
+      } else {
+        setComments([...comments, res.data]);
+      }
+
+      setNewComment("");
+      setReplyTo(null);
+    } catch (err) {
+      toast.error("Failed to post comment");
+    } finally {
+      setPostingComment(false);
+    }
+  };
+
+  const handleDeleteComment = async (commentId) => {
+    const confirmed = await confirm({
+      title: "Delete Comment",
+      message: "Are you sure you want to delete this comment? This cannot be undone.",
+      confirmText: "Delete",
+      type: "danger"
+    });
+
+    if (!confirmed) return;
+
+    try {
+      await axios.delete(`${import.meta.env.VITE_BACKEND_URL}/api/video-comment/`, {
+        data: { idToken: token, commentId }
+      });
+
+      // Remove from state
+      const removeNode = (list) => {
+        return list
+          .filter(c => c.id !== commentId)
+          .map(c => ({
+            ...c,
+            replies: c.replies ? removeNode(c.replies) : []
+          }));
+      };
+
+      setComments(removeNode(comments));
+    } catch (err) {
+      toast.error("Failed to delete comment");
+    }
+  };
+
+
+
+  useEffect(() => {
+    const fetchClassroom = async () => {
+      try {
+        const res = await axios.post(
+          `${import.meta.env.VITE_BACKEND_URL}/api/classroom/`,
+          {
+            idToken: token,
+            videoId: videoId,
+          }
+        );
+
+        setVideo(res.data.video);
+        setLiveProgress(res.data.video.watch_progress || 0);
+        setLastSavedProgress(res.data.video.watch_progress || 0);
+        setHasSeeked(false);
+        setPlaylist(res.data.playlist);
+
+        if (res.data.playlist && window.innerWidth < 1024) {
+          setActiveTab('playlist');
+        } else if (!res.data.playlist && activeTab === 'playlist') {
+          setActiveTab('overview');
+        } else {
+          const savedTab = localStorage.getItem(`learnproof_active_tab_${videoId}`);
+          if (savedTab) {
+            setActiveTab(savedTab);
+          }
+        }
+      } catch (err) {
+        console.error(err);
+        toast.error("Failed to load classroom");
+      } finally {
+        setLoading(false);
+      }
+    };
+    if (token && videoId) {
+      setShowNextOverlay(false); // Reset next video overlay
+      setHasCancelledOverlay(false); // Reset next video cancel state
+      setIntuitionContent(""); // Clear previous intuition when video changes
+      setQuizData(null);
+      setQuizResult(null);
+      setQuizHistory([]);
+      setSelectedHistoryQuiz(null);
+      setFlashcardQuestions([]);
+      setQuizSubTab('quiz');
+      setPlayerError(false); // Reset player error on video change
+      setIsVideoPlaying(false);
+      setHasSeeked(false);
+      fetchClassroom();
+      fetchDiscussionData();
+      fetchQuizHistory();
+    }
+  }, [token, videoId]);
+
+  // Sync pagination with active video
+  useEffect(() => {
+    if (playlist?.videos?.length > 0 && videoId) {
+      const vIndex = playlist.videos.findIndex(v => v.vid === videoId);
+      if (vIndex !== -1) {
+        const pageOfVideo = Math.floor(vIndex / ITEMS_PER_PAGE) + 1;
+        setPlaylistPage(pageOfVideo);
+      }
+    }
+  }, [playlist, videoId]);
+
+  // Auto-scroll to the active video in the playlist
+  useEffect(() => {
+    // Only scroll if we are directly viewing the playlist tab, 
+    // or if the video id/playlist itself just loaded on desktop
+    if (activeVideoRef.current) {
+      if (window.innerWidth >= 1024 || activeTab === 'playlist') {
+        // Prevent aggressive document scrolls by safely scrolling within the parent
+        activeVideoRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
+  }, [videoId, playlistPage, activeTab === 'playlist']);
+
+  // Fetch intuition only when the tab is opened
+  useEffect(() => {
+    if (activeTab === 'intuition') {
+      fetchIntuition();
+    }
+    if (activeTab === 'quiz' && quizHistory.length === 0) {
+      fetchQuizHistory();
+    }
+  }, [activeTab, token, videoId, video]);
+
+  // Intuition Generation Countdown
+  useEffect(() => {
+    let interval;
+    if (loadingIntuition) {
+      setIntuitionCountdown(15);
+      interval = setInterval(() => {
+        setIntuitionCountdown(prev => (prev > 1 ? prev - 1 : 1));
+      }, 1000);
+    } else {
+      setIntuitionCountdown(15);
+    }
+    return () => clearInterval(interval);
+  }, [loadingIntuition]);
+
+  // Quiz Timer
+  useEffect(() => {
+    if (!quizData) return;
+    const timer = setInterval(() => {
+      setTimeLeft(t => {
+        if (t <= 1) {
+          clearInterval(timer);
+          handleSubmitQuiz(); // auto-submit when time runs out
+          return 0;
+        }
+        return t - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [quizData]);
+
+  const handleStartQuiz = async () => {
+    setLoadingQuiz(true);
+    setQuizResult(null);
+    try {
+      const res = await axios.post(`${import.meta.env.VITE_BACKEND_URL}/api/start-quiz/`, {
+        idToken: token,
+        contentType: 'video',
+        contentId: videoId,
+      });
+      toast.dismiss();
+      setQuizData(res.data.quiz);
+      setAnswers({});
+      setTimeLeft(res.data.quiz.time_limit * 60); // Use time_limit from backend (convert to seconds)
+    } catch (err) {
+      console.error(err);
+      const errorMsg = err.response?.data?.error || err.response?.data?.message || "Failed to start quiz. Check your connection.";
+
+      if (err.response?.status === 403) {
+        toast.error(errorMsg);
+      } else {
+        toast.error(errorMsg);
+      }
+    } finally {
+      setLoadingQuiz(false);
+    }
+  };
+
+  // Reset flashcardsStarted and questions when changing video
+  useEffect(() => {
+    setFlashcardsStarted(false);
+    setFlashcardQuestions([]);
+  }, [videoId]);
+
+  // Silent prefetch when user views Quiz tab so Start Flashcards is instant
+  useEffect(() => {
+    if (activeTab === 'quiz' && flashcardQuestions.length === 0 && !loadingFlashcards && !inFlightFlashcardPromiseRef.current) {
+      fetchFlashcards(false, true);
+    }
+  }, [activeTab, videoId]);
+
+  const fetchFlashcards = async (forceRefresh = false, silent = false) => {
+    if (!forceRefresh && flashcardQuestions.length > 0) return flashcardQuestions;
+
+    // Reuse existing in-flight request to avoid race condition and duplicate network calls
+    if (inFlightFlashcardPromiseRef.current) {
+      if (!silent) setLoadingFlashcards(true);
+      try {
+        const inFlightRes = await inFlightFlashcardPromiseRef.current;
+        return inFlightRes;
+      } finally {
+        if (!silent) setLoadingFlashcards(false);
+      }
+    }
+
+    if (!silent) setLoadingFlashcards(true);
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'https://api.learnproofai.com';
+    const safeToken = encodeURIComponent(token || '');
+
+    const currentPromise = (async () => {
+      try {
+        const res = await axios.post(`${backendUrl}/api/quiz-flashcards/?idToken=${safeToken}`, {
+          idToken: token,
+          contentType: 'video',
+          contentId: videoId,
+          videoTitle: video?.name || '',
+        }, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.data?.questions && Array.isArray(res.data.questions) && res.data.questions.length > 0) {
+          setFlashcardQuestions(res.data.questions);
+          return res.data.questions;
+        }
+      } catch (err) {
+        console.error("Flashcards request failed:", err);
+        if (!silent) {
+          toast.error("Could not load flashcards. Please try again.");
+        }
+      }
+      return [];
+    })();
+
+    inFlightFlashcardPromiseRef.current = currentPromise;
+
+    try {
+      const result = await currentPromise;
+      return result;
+    } finally {
+      inFlightFlashcardPromiseRef.current = null;
+      if (!silent) setLoadingFlashcards(false);
+    }
+  };
+
+  const handleStartFlashcards = async () => {
+    if (flashcardQuestions.length > 0) {
+      setFlashcardsStarted(true);
+      return;
+    }
+    const res = await fetchFlashcards(false, false);
+    if (res && res.length > 0) {
+      setFlashcardsStarted(true);
+    }
+  };
+
+  const handleQuizAnswer = (qIdx, value) => {
+    setAnswers(prev => ({ ...prev, [qIdx]: value }));
+  };
+
+  const handleSubmitQuiz = async () => {
+    if (!quizData) return;
+    setSubmittingQuiz(true);
+    try {
+      const answerList = (quizData?.questions || []).map((_, idx) => answers[idx] || "");
+      const res = await axios.post(`${import.meta.env.VITE_BACKEND_URL}/api/submit-quiz/`, {
+        idToken: token,
+        quizId: quizData.quiz_id,
+        answers: answerList,
+      });
+      setQuizResult(res.data);
+      await fetchQuizHistory();
+      toast.success("Quiz submitted!");
+      setQuizData(null);
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to submit quiz");
+    } finally {
+      setSubmittingQuiz(false);
+    }
+  };
+
+  const updatePlaylistVideoState = (vid, updates) => {
+    setPlaylist(prev => {
+      if (!prev || !prev.videos) return prev;
+      return {
+        ...prev,
+        videos: prev.videos.map(v =>
+          v.vid === vid ? { ...v, ...updates } : v
+        )
+      };
+    });
+  };
+
+  const showCoachToast = (coachMessage) => {
+    if (!coachMessage) return;
+    toast.custom((t) => (
+      <div className={`${t.visible ? 'animate-enter' : 'animate-leave'} max-w-sm sm:max-w-md w-full bg-white dark:bg-gray-800 shadow-2xl rounded-2xl pointer-events-auto flex ring-1 ring-black/5 dark:ring-white/10 p-4 border-l-4 ${coachMessage.remaining === 0 ? 'border-emerald-500' : coachMessage.remaining === 1 ? 'border-amber-500' : 'border-orange-500'}`}>
+        <div className="flex-1 w-0">
+          <div className="flex items-start">
+            <div className="shrink-0 pt-0.5 text-2xl">
+              {coachMessage.remaining === 0 ? '🏆' : coachMessage.remaining === 1 ? '🔥' : '🎯'}
+            </div>
+            <div className="ml-3 flex-1 min-w-0">
+              <p className="text-sm font-black text-gray-900 dark:text-white leading-tight">
+                {coachMessage.title}
+              </p>
+              <p className="mt-1 text-xs text-gray-600 dark:text-gray-300 leading-snug">
+                {coachMessage.message}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    ), { duration: 5500 });
+  };
+
+  const markAsCompleted = async () => {
+    if (!video) return;
+    setMarking(true);
+    try {
+      const res = await axios.post(`${import.meta.env.VITE_BACKEND_URL}/api/mark-completed/`, {
+        idToken: token,
+        videoId: video.vid,
+      });
+      setVideo({ ...video, watch_progress: 100, is_completed: true });
+      setLiveProgress(100);
+      updatePlaylistVideoState(video.vid, { watch_progress: 100, is_completed: true });
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to mark as completed");
+    } finally {
+      setMarking(false);
+    }
+  };
+
+  const unmarkAsCompleted = async () => {
+    if (!video) return;
+    setMarking(true);
+    try {
+      await axios.post(`${import.meta.env.VITE_BACKEND_URL}/api/unmark-completed/`, {
+        idToken: token,
+        videoId: video.vid,
+      });
+      setVideo({ ...video, watch_progress: 0, is_completed: false });
+      setLiveProgress(0);
+      updatePlaylistVideoState(video.vid, { watch_progress: 0, is_completed: false });
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to unmark");
+    } finally {
+      setMarking(false);
+    }
+  };
+
+  useEffect(() => {
+    let interval;
+    if (player && player.getCurrentTime && video && video.vid === videoId) {
+      interval = setInterval(async () => {
+        try {
+          if (!player || !player.getCurrentTime) return;
+          const currentTime = await player.getCurrentTime();
+          const duration = await player.getDuration();
+
+          if (duration > 0 && currentTime > 0) {
+            const percentRaw = (currentTime / duration) * 100;
+            const percentage = Math.round(percentRaw);
+
+            setLiveProgress(percentage);
+            try {
+              localStorage.setItem(`learnproof_seek_${videoId}`, String(currentTime));
+            } catch (e) { }
+
+            // Auto-trigger next overlay to block YouTube annotations (which can start up to 20s before the end)
+            // Ensure video has actually played past 50% and is for current videoId
+            const triggerOffset = duration > 60 ? 20 : (duration * 0.1);
+            if (
+              duration - currentTime <= triggerOffset &&
+              currentTime >= duration * 0.5 &&
+              nextVideo &&
+              !showNextOverlay &&
+              !hasCancelledOverlay &&
+              video.vid === videoId
+            ) {
+              console.log(`Auto-triggering next overlay ${triggerOffset}s before end to block annotations`);
+              setShowNextOverlay(true);
+            }
+
+            // Only save to backend every 2% changes or if it reached >95%
+            if (percentage > lastSavedProgress + 2 || (percentage > 95 && lastSavedProgress <= 95)) {
+              console.log("Saving progress to backend:", percentage);
+              setLastSavedProgress(percentage);
+
+              if (percentage >= 95 && !video.is_completed) {
+                // Auto-mark completed
+                const res = await axios.post(`${import.meta.env.VITE_BACKEND_URL}/api/mark-completed/`, {
+                  idToken: token,
+                  videoId: video.vid,
+                });
+                setVideo(prev => ({ ...prev, watch_progress: 100, is_completed: true }));
+                updatePlaylistVideoState(video.vid, { watch_progress: 100, is_completed: true });
+              } else {
+                // Just update partial progress
+                await axios.post(`${import.meta.env.VITE_BACKEND_URL}/api/update-progress/`, {
+                  idToken: token,
+                  videoId: video.vid,
+                  progress: percentage
+                });
+                setVideo(prev => ({ ...prev, watch_progress: percentage }));
+                updatePlaylistVideoState(video.vid, { watch_progress: percentage });
+              }
+            }
+
+            // Smart non-intrusive speed sync: guarantees true speed without stuttering during normal playback
+            try {
+              const currentPreferred = userSpeedRef.current || parseFloat(localStorage.getItem('learnproof_playback_speed') || '1');
+              const expectedYtRate = getValidYouTubeRate(currentPreferred, player);
+
+              if (expectedYtRate && expectedYtRate > 1 && typeof player.getCurrentTime === 'function') {
+                const now = Date.now();
+                const realElapsed = (now - lastPlayProgressRef.current.realTime) / 1000;
+                const currentVTime = await player.getCurrentTime();
+                const videoElapsed = currentVTime - lastPlayProgressRef.current.videoTime;
+                lastPlayProgressRef.current = { videoTime: currentVTime, realTime: now };
+
+                const nowMs = Date.now();
+                const isCooldown = nowMs < lastSyncCooldownRef.current;
+
+                if (
+                  !isCooldown &&
+                  !document.hidden &&
+                  realElapsed >= 0.8 &&
+                  realElapsed <= 2.2 &&
+                  videoElapsed >= 0.3 &&
+                  videoElapsed <= 4.0
+                ) {
+                  const measuredRate = videoElapsed / realElapsed;
+                  // If user selected speed >= 1.25x, but the video has actually been clocking at normal speed <= 1.12x
+                  if (measuredRate <= 1.12) {
+                    consecutiveSlowCountRef.current = (consecutiveSlowCountRef.current || 0) + 1;
+                    // Require 3 consecutive seconds of 1.0x playback before intervening
+                    if (consecutiveSlowCountRef.current >= 3) {
+                      console.warn(`[Speed Sync] Video stuck at 1x despite preference ${expectedYtRate}x. Re-syncing.`);
+                      resyncPlaybackSpeed(expectedYtRate, player);
+                      consecutiveSlowCountRef.current = 0;
+                      lastSyncCooldownRef.current = nowMs + 5000; // 5-second cooldown to let decoder stabilize
+                    }
+                  } else {
+                    // Video is playing at increased speed (e.g. 1.25+, 1.5+, 2.0+) - reset counter
+                    consecutiveSlowCountRef.current = 0;
+                  }
+                }
+              } else {
+                lastPlayProgressRef.current = {
+                  videoTime: (typeof player?.getCurrentTime === 'function' ? await player.getCurrentTime() : 0),
+                  realTime: Date.now()
+                };
+                consecutiveSlowCountRef.current = 0;
+              }
+
+              if (currentPreferred) {
+                document.querySelectorAll('video').forEach((v) => {
+                  try {
+                    if (Math.abs(v.playbackRate - currentPreferred) > 0.05) {
+                      v.playbackRate = currentPreferred;
+                      v.defaultPlaybackRate = currentPreferred;
+                    }
+                  } catch (_) {}
+                });
+              }
+            } catch (_) {}
+          }
+        } catch (err) {
+          // Ignore player errors during unmounts/loading
+        }
+      }, 1000); // Check every 1 second
+    }
+
+    // POLICY COMPLIANCE & SPEED PERSISTENCE:
+    // 1. Pause video if tab is hidden (No background playback)
+    // 2. Re-enforce playback speed when user returns from switching apps or unlocking screen
+    const handleVisibilityChange = () => {
+      const targetP = playerRef.current || player;
+      if (document.hidden) {
+        wasAppBackgroundedRef.current = true;
+        if (targetP && typeof targetP.pauseVideo === 'function') {
+          try {
+            targetP.pauseVideo();
+          } catch (_) {}
+        }
+      } else {
+        // App switch return: Re-enforce preferred speed immediately and after resuming
+        wasAppBackgroundedRef.current = true;
+        const currentPreferred = userSpeedRef.current || parseFloat(localStorage.getItem('learnproof_playback_speed') || '1');
+        if (currentPreferred && currentPreferred !== 1 && targetP) {
+          resyncPlaybackSpeed(currentPreferred, targetP);
+        }
+      }
+    };
+
+    const handleWindowFocus = () => {
+      const targetP = playerRef.current || player;
+      const currentPreferred = userSpeedRef.current || parseFloat(localStorage.getItem('learnproof_playback_speed') || '1');
+      if (currentPreferred && currentPreferred !== 1 && targetP) {
+        resyncPlaybackSpeed(currentPreferred, targetP);
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", handleWindowFocus);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleWindowFocus);
+      // Final save on unmount/video change if progress changed
+      if (latestProgressRef?.current > lastSavedProgress) {
+        axios.post(`${import.meta.env.VITE_BACKEND_URL}/api/update-progress/`, {
+          idToken: token,
+          videoId: video?.vid,
+          progress: latestProgressRef.current
+        }).catch(() => { });
+      }
+    };
+  }, [player, video, videoId, lastSavedProgress, token, nextVideo, showNextOverlay, hasCancelledOverlay]);
+
+  const handlePlayerStateChange = async (event) => {
+    // YT.PlayerState.PLAYING is 1
+    if (event.data === 1) {
+      setIsVideoPlaying(true);
+      let didSeek = false;
+      if (!hasSeeked) {
+        setHasSeeked(true);
+        const duration = await event.target.getDuration();
+        const savedSeekSeconds = parseFloat(localStorage.getItem(`learnproof_seek_${videoId}`) || '0');
+        if (savedSeekSeconds > 3 && duration > 0 && savedSeekSeconds < duration - 5) {
+          event.target.seekTo(savedSeekSeconds, true);
+          didSeek = true;
+        } else if (video?.watch_progress > 0 && video?.watch_progress < 98 && duration > 0) {
+          const seekSeconds = (video.watch_progress / 100) * duration;
+          event.target.seekTo(seekSeconds, true);
+          setLastSavedProgress(video.watch_progress);
+          didSeek = true;
+        }
+      }
+
+      // Re-apply preferred playback speed reliably once video is playing (bust YouTube cache on app return)
+      const currentRate = userSpeedRef.current || parseFloat(localStorage.getItem('learnproof_playback_speed') || '1');
+      if (currentRate) {
+        if (currentRate !== 1 && wasAppBackgroundedRef.current) {
+          wasAppBackgroundedRef.current = false;
+          setTimeout(() => {
+            resyncPlaybackSpeed(currentRate, event.target);
+          }, 60);
+        } else {
+          const delays = didSeek ? [150, 450, 900, 1600] : [40, 200, 500, 1000];
+          enforcePlayerSpeedWithRetries(currentRate, event.target, delays);
+        }
+      }
+      isSwitchingVideoRef.current = false;
+    } else if (event.data === 2) {
+      // PAUSED - keep poster hidden
+      setIsVideoPlaying(true);
+    } else if (event.data === 5 || event.data === -1) {
+      // CUED / UNSTARTED - kick play to start video without user waiting
+      try {
+        const p = event.target.playVideo();
+        if (p && p.catch) p.catch(() => { });
+      } catch (_) { }
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-orange-50 to-amber-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="mx-auto h-12 w-12 text-orange-500 mb-4">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-orange-500"></div>
+          </div>
+          <p className="text-lg text-gray-700 font-medium">Loading classroom...</p>
+          <p className="text-sm text-gray-500 mt-1">Please wait while we prepare your content</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!video) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-red-50 to-pink-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="bg-red-100 rounded-full p-4 mx-auto w-20 h-20 flex items-center justify-center mb-4">
+            <Eye className="h-8 w-8 text-red-500" />
+          </div>
+          <h2 className="text-2xl font-bold text-red-600 mb-2">Video Not Found</h2>
+          <p className="text-gray-600">The requested video could not be loaded.</p>
+          <button
+            onClick={() => {
+              if (playlist?.pid) {
+                navigate(`/dashboard/playlist/${playlist.pid}`);
+              } else {
+                navigate(-1);
+              }
+            }}
+            className="mt-4 px-6 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors flex items-center gap-2 mx-auto uppercase text-[10px] font-black tracking-widest"
+          >
+            <ArrowLeft size={16} /> Back to Course
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col lg:flex-row min-h-screen lg:min-h-0 lg:h-screen bg-white dark:bg-gray-900 transition-colors duration-200">
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col w-full lg:w-auto lg:h-screen lg:overflow-hidden">
+        {/* Premium Header */}
+        <div className="bg-white/95 dark:bg-gray-900/95 backdrop-blur-xl border-b border-gray-100 dark:border-slate-800 shadow-sm transition-colors duration-200 relative lg:sticky lg:top-0 z-40 pt-[var(--sat,0px)]">
+          <div className="flex items-center justify-between px-4 sm:px-6 py-3.5">
+            <button
+              onClick={() => {
+                if (playlist?.pid) {
+                  navigate(`/dashboard/playlist/${playlist.pid}`);
+                } else {
+                  navigate(-1);
+                }
+              }}
+              className="group flex items-center gap-2 text-gray-500 dark:text-slate-400 hover:text-orange-500 text-sm font-black uppercase tracking-widest transition-all"
+            >
+              <ArrowLeft size={16} className="group-hover:-translate-x-1 transition-transform" />
+              <span className="hidden sm:inline">Back</span>
+            </button>
+
+            <div className="flex items-center gap-2 sm:gap-3">
+              {/* Playback Speed Controller */}
+              <div className="relative" ref={speedMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => setShowSpeedMenu(prev => !prev)}
+                  className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 border rounded-xl text-xs font-black transition-all cursor-pointer shadow-xs active:scale-95 ${
+                    playbackSpeed !== 1
+                      ? 'bg-orange-50 dark:bg-orange-950/40 border-orange-300 dark:border-orange-800 text-orange-600 dark:text-orange-400'
+                      : 'bg-gray-50 dark:bg-slate-800 hover:bg-orange-50 dark:hover:bg-slate-700/80 border-gray-200/80 dark:border-slate-700 text-gray-700 dark:text-slate-200'
+                  }`}
+                  title="Playback Speed"
+                >
+                  <Gauge size={13} className={playbackSpeed !== 1 ? 'text-orange-500 shrink-0' : 'text-gray-400 shrink-0'} />
+                  <span className="font-mono">{playbackSpeed}x</span>
+                  {playbackSpeed > 2 && (
+                    <Zap size={11} className="text-amber-500 fill-amber-500 -ml-0.5 shrink-0" />
+                  )}
+                  <ChevronDown size={11} className={`text-gray-400 transition-transform duration-200 ${showSpeedMenu ? 'rotate-180' : ''}`} />
+                </button>
+
+                {/* Click-Outside Global Backdrop (Closes immediately when tapping anywhere else) */}
+                {showSpeedMenu && (
+                  <div
+                    className="fixed inset-0 z-40 bg-black/20 backdrop-blur-[1px] animate-in fade-in duration-150"
+                    onClick={() => setShowSpeedMenu(false)}
+                    onTouchStart={() => setShowSpeedMenu(false)}
+                  />
+                )}
+
+                {/* Dropdown Menu - Compact Mobile Slider & Desktop Card */}
+                {showSpeedMenu && (
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onTouchStart={(e) => e.stopPropagation()}
+                    className="fixed top-14 right-3 w-[275px] sm:absolute sm:top-full sm:right-0 sm:mt-2 sm:w-72 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border border-gray-200/80 dark:border-slate-800 rounded-2xl shadow-2xl p-2.5 sm:p-3 z-50 animate-in fade-in zoom-in-95 duration-150"
+                  >
+                    {/* Header */}
+                    <div className="flex items-center justify-between pb-2 border-b border-gray-100 dark:border-slate-800">
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-5 h-5 rounded-md bg-orange-100 dark:bg-orange-950/60 text-orange-600 dark:text-orange-400 flex items-center justify-center">
+                          <Gauge size={12} />
+                        </div>
+                        <span className="text-[11px] font-black text-gray-800 dark:text-white uppercase tracking-wider">Speed</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <div className="px-2 py-0.5 rounded-full bg-gradient-to-r from-orange-500 to-amber-500 text-white font-mono text-[11px] font-black shadow-xs">
+                          {playbackSpeed}x
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowSpeedMenu(false)}
+                          className="w-5 h-5 flex items-center justify-center rounded-md text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                          aria-label="Close speed selector"
+                        >
+                          <X size={13} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Interactive Slider & Steppers */}
+                    <div className="py-2.5 space-y-1.5">
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleStepSpeed(-1)}
+                          disabled={playbackSpeed <= SPEED_OPTIONS[0]}
+                          className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-gray-700 dark:text-slate-200 hover:bg-orange-50 dark:hover:bg-slate-700 active:scale-95 disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer"
+                          title="Slower"
+                        >
+                          <Minus size={12} />
+                        </button>
+
+                        <div className="flex-1 relative flex items-center">
+                          <input
+                            type="range"
+                            min="0.5"
+                            max="4"
+                            step="0.1"
+                            value={playbackSpeed}
+                            onChange={(e) => applyPlaybackSpeed(parseFloat(e.target.value))}
+                            className="w-full h-1.5 bg-gray-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-orange-500 focus:outline-none"
+                          />
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => handleStepSpeed(1)}
+                          disabled={playbackSpeed >= SPEED_OPTIONS[SPEED_OPTIONS.length - 1]}
+                          className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-gray-700 dark:text-slate-200 hover:bg-orange-50 dark:hover:bg-slate-700 active:scale-95 disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer"
+                          title="Faster"
+                        >
+                          <Plus size={12} />
+                        </button>
+                      </div>
+
+                      {/* Slider Min / Max Labels */}
+                      <div className="flex justify-between text-[9px] font-bold font-mono text-gray-400 dark:text-slate-500 px-8">
+                        <span>0.5x</span>
+                        <span className={playbackSpeed === 1 ? 'text-orange-500 font-black' : ''}>1.0x</span>
+                        <span className={playbackSpeed === 2 ? 'text-orange-500 font-black' : ''}>2.0x</span>
+                        <span>4.0x</span>
+                      </div>
+                    </div>
+
+                    {/* Quick Snap Preset Chips */}
+                    <div className="flex items-center gap-1 overflow-x-auto pb-1.5 scrollbar-none">
+                      {[0.75, 1, 1.25, 1.5, 1.6, 1.75, 2, 2.5, 3, 4].map((rate) => {
+                        const isCurrent = playbackSpeed === rate;
+                        return (
+                          <button
+                            key={rate}
+                            type="button"
+                            onClick={() => applyPlaybackSpeed(rate)}
+                            className={`shrink-0 px-2 py-0.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
+                              isCurrent
+                                ? 'bg-orange-500 text-white shadow-xs scale-105'
+                                : 'bg-gray-50 dark:bg-slate-800/80 hover:bg-orange-50 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-300 border border-gray-200/60 dark:border-slate-700/60'
+                            }`}
+                          >
+                            <span className="font-mono">{rate === 1 ? '1x' : `${rate}x`}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Footer Controls */}
+                    <div className="pt-1.5 border-t border-gray-100 dark:border-slate-800 flex items-center justify-between text-[10px]">
+                      <button
+                        type="button"
+                        onClick={() => applyPlaybackSpeed(1)}
+                        className="font-bold text-gray-500 dark:text-slate-400 hover:text-orange-500 transition cursor-pointer"
+                      >
+                        Reset to 1x
+                      </button>
+                      <span className="text-[9px] text-gray-400 dark:text-slate-500">Persists across lessons</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Live progress chip */}
+              <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-gray-50 dark:bg-slate-800 border border-gray-100 dark:border-slate-700 rounded-xl">
+                <div className="w-2 h-2 rounded-full bg-orange-500 animate-pulse"></div>
+                <span className="text-xs font-black text-gray-500 dark:text-slate-400 uppercase tracking-widest">{Math.round(liveProgress)}% watched</span>
+              </div>
+
+              <button
+                onClick={video.is_completed ? unmarkAsCompleted : markAsCompleted}
+                disabled={marking}
+                className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest flex items-center gap-2 transition-all ${video.is_completed
+                  ? 'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400 border border-green-200 dark:border-green-800 hover:bg-green-100'
+                  : 'bg-orange-500 text-white shadow-lg shadow-orange-500/20 hover:bg-orange-600 hover:shadow-orange-500/30'
+                  }`}
+              >
+                {marking ? (
+                  <div className={`animate-spin rounded-full h-4 w-4 border-2 ${video.is_completed ? 'border-green-500 border-t-transparent' : 'border-white border-t-transparent'}`}></div>
+                ) : (
+                  <CheckCircle size={14} />
+                )}
+                <span className="hidden sm:inline">
+                  {video.is_completed ? 'Completed ✓' : 'Mark as Done'}
+                </span>
+                <span className="sm:hidden">
+                  {video.is_completed ? '✓' : 'Done'}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-col flex-1 lg:overflow-y-auto w-full max-w-full bg-white dark:bg-gray-900 transition-colors duration-200">
+          {/* Enhanced Video Player */}
+          <div ref={playerContainerRef} className="bg-black relative shadow-2xl aspect-video w-full flex items-center justify-center shrink-0 overflow-hidden group">
+            {/* Non-blocking background poster behind YouTube iframe - eliminates black void while iframe mounts */}
+            <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden select-none">
+              <img
+                src={`https://img.youtube.com/vi/${video.vid}/hqdefault.jpg`}
+                alt=""
+                className="w-full h-full object-cover filter blur-sm scale-105 opacity-25"
+              />
+            </div>
+
+            <YouTube
+              key={video.vid}
+              videoId={video.vid}
+              opts={{
+                host: 'https://www.youtube.com',
+                width: '100%',
+                height: '100%',
+                playerVars: {
+                  autoplay: 1,
+                  playsinline: 1,
+                  rel: 0,
+                  modestbranding: 0,
+                  enablejsapi: 1,
+                  origin: typeof window !== 'undefined' ? window.location.origin : 'https://learnproofai.com',
+                  widget_referrer: typeof window !== 'undefined' ? window.location.origin : 'https://learnproofai.com',
+                  iv_load_policy: 3,
+                  hl: 'en'
+                }
+              }}
+              className="absolute top-0 left-0 w-full h-full"
+              containerClassName="w-full h-full absolute inset-0 z-10"
+              onReady={(e) => {
+                playerRef.current = e.target;
+                setPlayer(e.target);
+                setPlayerError(false);
+                // Allow iframe postMessage channel handshake to settle before issuing playback commands
+                setTimeout(() => {
+                  try {
+                    const p = e.target.playVideo();
+                    if (p && p.catch) p.catch(() => { });
+                  } catch (_) { }
+                }, 150);
+              }}
+              onStateChange={handlePlayerStateChange}
+              onPlaybackRateChange={(e) => {
+                const newRate = e.data;
+                const preferred = userSpeedRef.current || parseFloat(localStorage.getItem('learnproof_playback_speed') || '1');
+                const expectedYtRate = getValidYouTubeRate(preferred, e.target);
+                console.log("YouTube playback rate event:", newRate, "preferred:", preferred, "expectedYt:", expectedYtRate);
+
+                // If YouTube automatically reset to 1 upon loading a new video/stream or app resume, but preferred is not 1:
+                if (newRate === 1 && expectedYtRate !== 1) {
+                  setTimeout(() => {
+                    try {
+                      if (e.target && typeof e.target.setPlaybackRate === 'function') {
+                        e.target.setPlaybackRate(expectedYtRate);
+                      }
+                    } catch (_) {}
+                  }, 40);
+                  return;
+                }
+
+                // If YouTube emitted its nearest quantized rate (e.g. 1.5 when user picked 1.6, or 2.0 when user picked 2.5):
+                // Do NOT downgrade or overwrite the user's customized rate in state or localStorage!
+                if (Math.abs(newRate - expectedYtRate) < 0.05 && preferred !== newRate) {
+                  return;
+                }
+
+                setPlaybackSpeed(newRate);
+                userSpeedRef.current = newRate;
+                try {
+                  localStorage.setItem('learnproof_playback_speed', newRate.toString());
+                } catch (_) {}
+              }}
+              onEnd={() => {
+                if (nextVideo) {
+                  console.log("Video ended, triggering next overlay");
+                  setShowNextOverlay(true);
+                  // Exit native iframe fullscreen so overlay is visible
+                  if (document.fullscreenElement) {
+                    document.exitFullscreen().catch(() => { });
+                  }
+                }
+              }}
+              onError={() => setPlayerError(true)}
+            />
+
+            {/* Click-Outside Catcher over Video Iframe when Speed Menu is open */}
+            {showSpeedMenu && (
+              <div
+                className="absolute inset-0 z-25 cursor-pointer bg-transparent"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowSpeedMenu(false);
+                }}
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  setShowSpeedMenu(false);
+                }}
+                aria-label="Close speed menu"
+              />
+            )}
+
+            {/* Extension-Style Floating Speed Pill (Desktop & Mobile) */}
+            <div className={`absolute top-3 left-3 z-30 flex items-center gap-1 bg-black/60 hover:bg-black/85 backdrop-blur-md border border-white/20 text-white rounded-xl px-2 py-1 shadow-lg transition-all duration-200 select-none ${
+              speedHudVisible ? 'opacity-100 scale-100' : 'opacity-0 group-hover:opacity-100 scale-95 group-hover:scale-100'
+            }`}>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleStepSpeed(-1);
+                }}
+                disabled={playbackSpeed <= SPEED_OPTIONS[0]}
+                className="w-5 h-5 flex items-center justify-center rounded-md hover:bg-white/20 active:scale-90 disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer"
+                title="Slow down [S]"
+              >
+                <Minus size={11} />
+              </button>
+
+              <div 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowSpeedMenu(prev => !prev);
+                }}
+                className="px-1.5 py-0.5 text-xs font-mono font-bold text-orange-400 hover:text-orange-300 transition cursor-pointer flex items-center gap-0.5"
+                title="Click for Speed Menu (or press S/D keys)"
+              >
+                <span>{playbackSpeed}x</span>
+                {playbackSpeed > 2 && <Zap size={10} className="fill-amber-400 text-amber-400" />}
+              </div>
+
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleStepSpeed(1);
+                }}
+                disabled={playbackSpeed >= SPEED_OPTIONS[SPEED_OPTIONS.length - 1]}
+                className="w-5 h-5 flex items-center justify-center rounded-md hover:bg-white/20 active:scale-90 disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer"
+                title="Speed up [D]"
+              >
+                <Plus size={11} />
+              </button>
+
+              {playbackSpeed !== 1 && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    applyPlaybackSpeed(1);
+                  }}
+                  className="ml-0.5 px-1 py-0.5 text-[9px] font-bold uppercase rounded bg-white/10 hover:bg-orange-500 text-gray-300 hover:text-white transition cursor-pointer"
+                  title="Reset to 1x [R]"
+                >
+                  1x
+                </button>
+              )}
+            </div>
+
+            {/* Quick Extension-Style Central Flash Indicator */}
+            <AnimatePresence>
+              {speedHudVisible && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.85 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.85 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 pointer-events-none bg-black/80 backdrop-blur-md border border-orange-500/30 text-white rounded-2xl px-5 py-3 shadow-2xl flex items-center gap-2"
+                >
+                  <Gauge size={22} className="text-orange-500" />
+                  <span className="text-2xl font-mono font-black text-orange-400">{playbackSpeed}x</span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Fallback overlay when YouTube blocks embedding */}
+            {playerError && (
+              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-6 bg-gray-950 text-white text-center px-6">
+                <div className="p-5 bg-red-500/10 rounded-full border border-red-500/20">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-red-400"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
+                </div>
+                <div>
+                  <h3 className="text-xl font-black mb-2">Embedding Restricted</h3>
+                  <p className="text-gray-400 text-sm max-w-sm">The video owner has disabled embedded playback. You can still watch this video directly on YouTube.</p>
+                </div>
+                <a
+                  href={`https://www.youtube.com/watch?v=${video.vid}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-3 px-8 py-3.5 bg-red-600 text-white font-black text-sm rounded-2xl hover:bg-red-700 transition-all hover:scale-105 shadow-2xl shadow-red-500/30"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" /></svg>
+                  Watch on YouTube
+                </a>
+              </div>
+            )}
+
+            {/* Custom Next Video recommendation overlay */}
+            {showNextOverlay && nextVideo && (
+              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/45 text-white text-center p-2 sm:p-4 transition-all duration-300 animate-fade-in">
+                <div className="max-w-[90%] w-[320px] sm:max-w-md bg-white/10 dark:bg-slate-900/40 backdrop-blur-xl border border-white/20 dark:border-slate-800 rounded-2xl sm:rounded-3xl p-3.5 sm:p-6 shadow-2xl flex flex-col items-center gap-2 sm:gap-4">
+                  <div className="text-[9px] sm:text-[10px] font-black uppercase tracking-widest text-orange-400">
+                    Next Lesson Up
+                  </div>
+
+                  {/* Thumbnail is hidden on mobile to avoid overflow inside portrait player aspect-ratio */}
+                  <div className="hidden sm:block relative w-full aspect-video rounded-2xl overflow-hidden shadow-lg group">
+                    <img
+                      src={`https://img.youtube.com/vi/${nextVideo.vid}/hqdefault.jpg`}
+                      alt={nextVideo.name}
+                      className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                    />
+                    <div className="absolute inset-0 bg-black/35 flex items-center justify-center">
+                      <div className="w-12 h-12 bg-orange-500 hover:bg-orange-600 rounded-full flex items-center justify-center transition-all transform hover:scale-110 shadow-lg cursor-pointer" onClick={() => handleSelectVideo(nextVideo.vid)}>
+                        <Play size={18} className="text-white fill-white ml-1" />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="text-center px-1 sm:px-2">
+                    <h4 className="text-xs sm:text-sm font-bold text-gray-100 line-clamp-1 sm:line-clamp-2 leading-snug">
+                      {nextVideo.name}
+                    </h4>
+                  </div>
+
+                  <div className="flex gap-2 sm:gap-3 w-full mt-1 sm:mt-2">
+                    <button
+                      onClick={() => {
+                        setShowNextOverlay(false);
+                        setHasCancelledOverlay(true);
+                      }}
+                      className="flex-1 py-2 sm:py-3 bg-white/10 hover:bg-white/20 text-white font-black text-[9px] sm:text-[10px] uppercase tracking-widest rounded-lg sm:rounded-xl transition-all"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => handleSelectVideo(nextVideo.vid)}
+                      className="flex-1 py-2 sm:py-3 bg-orange-500 hover:bg-orange-600 text-white font-black text-[9px] sm:text-[10px] uppercase tracking-widest rounded-lg sm:rounded-xl transition-all shadow-lg shadow-orange-500/25"
+                    >
+                      Play Next
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Video Details */}
+          <div className="bg-white dark:bg-gray-900 flex-1 min-w-0 transition-colors duration-200">
+            <div className="max-w-5xl mx-auto p-3 sm:p-6 pb-3 sm:pb-6 text-gray-900 dark:text-white">
+              <div className="flex items-start gap-2 mb-4">
+                <h1 className="text-sm md:text-base font-bold leading-snug flex-1 text-gray-800 dark:text-white line-clamp-2">{video.name}</h1>
+                <a
+                  href={`https://www.youtube.com/watch?v=${video.vid}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Watch on YouTube"
+                  className="shrink-0 mt-0.5 w-6 h-6 flex items-center justify-center text-gray-400 hover:text-red-600 dark:hover:text-red-500 transition-colors"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
+                  </svg>
+                </a>
+              </div>
+
+              {/* Progress Bar */}
+              <div className="flex items-center gap-4 mb-2 sm:mb-2.5">
+                <div className="flex-1 bg-gray-100 dark:bg-slate-800 rounded-full h-2 overflow-hidden">
+                  <motion.div
+                    initial={{ width: 0 }}
+                    animate={{ width: `${Math.round(liveProgress)}%` }}
+                    transition={{ duration: 0.8, ease: 'easeOut' }}
+                    className="h-2 bg-gradient-to-r from-orange-500 to-amber-400 rounded-full shadow-[0_0_8px_rgba(249,115,22,0.4)]"
+                  />
+                </div>
+                <span className="text-xs font-black text-orange-500 uppercase tracking-widest min-w-fit">
+                  {Math.round(liveProgress)}%
+                </span>
+              </div>
+
+              {/* Premium Tabs Switcher - Sticky at top when scrolling */}
+              <div
+                ref={tabsContainerRef}
+                id="classroom-tabs-bar"
+                className="sticky top-0 z-30 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md py-2 -mx-3 px-3 sm:-mx-6 sm:px-6 transition-all duration-200 mt-0.5 sm:mt-1"
+              >
+                <div className="w-full grid grid-flow-col auto-cols-fr bg-gray-50/90 dark:bg-slate-800/60 rounded-xl sm:rounded-2xl p-0.5 sm:p-1.5 gap-0.5 sm:gap-1 border border-gray-200/70 dark:border-slate-700/60 shadow-xs">
+                  {visibleClassroomTabs.map((tab) => {
+                    const Icon = tab.icon;
+                    const isActive = activeTab === tab.id;
+                    return (
+                      <button
+                        key={tab.id}
+                        id={`classroom-tab-${tab.id}`}
+                        onClick={() => handleSelectTab(tab.id)}
+                        className={`relative flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 py-1.5 sm:py-2 px-0.5 sm:px-1.5 rounded-lg sm:rounded-xl text-center transition-all duration-150 select-none cursor-pointer z-10 ${isActive
+                            ? 'text-white font-extrabold shadow-sm'
+                            : 'text-gray-600 dark:text-slate-300 hover:text-gray-900 dark:hover:text-white hover:bg-white/50 dark:hover:bg-slate-700/50 font-bold'
+                          }`}
+                      >
+                        {isActive && (
+                          <motion.div
+                            layoutId="activeClassroomTabPill"
+                            className="absolute inset-0 bg-gradient-to-r from-orange-500 to-amber-500 rounded-lg sm:rounded-xl shadow-md shadow-orange-500/25 -z-10"
+                            transition={{ type: "spring", bounce: 0.15, duration: 0.35 }}
+                          />
+                        )}
+                        <Icon size={14} strokeWidth={isActive ? 2.5 : 2} className="shrink-0 sm:size-[15px]" />
+                        <span className="text-[9px] min-[375px]:text-[9.5px] min-[400px]:text-[10px] sm:text-xs tracking-tight truncate max-w-full leading-none font-bold">
+                          <span className="hidden lg:inline">{tab.label}</span>
+                          <span className="lg:hidden">{tab.shortLabel || tab.label}</span>
+                          {tab.badge > 0 && (
+                            <span className="ml-0.5 text-[8px] sm:text-[10px] opacity-80 lg:hidden">({tab.badge})</span>
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Tab Contents */}
+              <div
+                className="pt-2 pb-2 sm:pt-4 sm:pb-6 min-h-[350px] touch-pan-y"
+                onTouchStart={handleTouchStart}
+                onTouchMove={handleTouchMove}
+                onTouchEnd={handleTouchEnd}
+              >
+                <AnimatePresence mode="wait">
+                  <motion.div
+                    key={activeTab}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    transition={{ duration: 0.18, ease: "easeOut" }}
+                    className="w-full"
+                  >
+                    {activeTab === 'playlist' && playlist && (() => {
+                    const allVideos = playlist.videos || [];
+                    const totalPages = Math.ceil(allVideos.length / ITEMS_PER_PAGE);
+                    const paginatedVideos = allVideos.slice((playlistPage - 1) * ITEMS_PER_PAGE, playlistPage * ITEMS_PER_PAGE);
+
+                    return (
+                      <div className="lg:hidden space-y-4">
+                        <div className="space-y-1 divide-y divide-gray-50 dark:divide-slate-800/50">
+                          {paginatedVideos.map((v, index) => {
+                            const absoluteIndex = (playlistPage - 1) * ITEMS_PER_PAGE + index;
+                            const isActive = v.vid === videoId;
+                            const progress = Math.round(isActive ? liveProgress : (v.watch_progress || 0));
+                            return (
+                              <div
+                                key={v.vid}
+                                ref={isActive ? activeVideoRef : null}
+                                onClick={() => handleSelectVideo(v.vid)}
+                                className={`group flex gap-3 p-3 cursor-pointer transition-all duration-200 rounded-xl ${isActive
+                                  ? 'bg-orange-50 dark:bg-orange-900/10 ring-1 ring-orange-200 dark:ring-orange-900/50'
+                                  : 'hover:bg-gray-50 dark:hover:bg-slate-800/60'
+                                  }`}
+                              >
+                                <div className="relative flex-shrink-0">
+                                  <img
+                                    src={`https://img.youtube.com/vi/${v.vid}/default.jpg`}
+                                    alt={v.name}
+                                    className={`w-20 h-12 object-cover rounded-lg shadow-sm ${isActive ? 'ring-2 ring-orange-400' : ''}`}
+                                  />
+                                  {(v.is_completed || (v.watch_progress || 0) >= 90) && !isActive && (
+                                    <div className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-emerald-500 text-white rounded-full flex items-center justify-center shadow-md border-2 border-white dark:border-slate-800 z-10" title="Completed">
+                                      <Check size={11} strokeWidth={3.5} />
+                                    </div>
+                                  )}
+                                  <div className="absolute -bottom-1.5 -left-1.5 w-5 h-5 bg-gray-800 dark:bg-slate-700 text-white rounded-full flex items-center justify-center text-[9px] font-black shadow-sm">
+                                    {absoluteIndex + 1}
+                                  </div>
+                                  {v.duration_seconds > 0 && (
+                                    <div className="absolute bottom-1 right-1 px-1.5 py-0.5 bg-black/85 backdrop-blur-xs text-white text-[8px] sm:text-[9px] font-black rounded leading-none z-10 shadow-xs">
+                                      {formatVideoDuration(v.duration_seconds)}
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <h3 className={`text-xs font-bold line-clamp-2 mb-1 leading-snug ${isActive ? 'text-orange-600 dark:text-orange-400' : 'text-gray-700 dark:text-slate-300'}`}>
+                                    {v.name}
+                                  </h3>
+                                  <div className="h-1 w-full bg-gray-100 dark:bg-slate-700 rounded-full overflow-hidden">
+                                    <div style={{ width: `${progress}%` }} className={`h-1 rounded-full ${v.is_completed ? 'bg-green-500' : 'bg-orange-500'}`} />
+                                  </div>
+                                  <div className="flex items-center justify-between text-[9px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-widest mt-1">
+                                    <span>{progress}% watched</span>
+                                    {v.duration_seconds > 0 && (
+                                      <span className="flex items-center gap-0.5 text-gray-500 dark:text-slate-400">
+                                        <Clock size={10} />
+                                        {formatVideoDuration(v.duration_seconds)}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {/* Pagination Controls */}
+                        {totalPages > 1 && (
+                          <div className="flex items-center justify-between pt-4 border-t border-gray-100 dark:border-slate-800">
+                            <button
+                              disabled={playlistPage === 1}
+                              onClick={() => setPlaylistPage(p => p - 1)}
+                              className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-gray-500 dark:text-slate-400 disabled:opacity-30 disabled:cursor-not-allowed hover:text-orange-500 transition-colors"
+                            >
+                              <ArrowLeft size={14} /> Previous
+                            </button>
+                            <span className="text-[10px] font-black uppercase tracking-widest text-gray-400 dark:text-slate-500">
+                              Page {playlistPage} of {totalPages}
+                            </span>
+                            <button
+                              disabled={playlistPage === totalPages}
+                              onClick={() => setPlaylistPage(p => p + 1)}
+                              className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-gray-500 dark:text-slate-400 disabled:opacity-30 disabled:cursor-not-allowed hover:text-orange-500 transition-colors"
+                            >
+                              Next <ChevronRight size={14} />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                  {/* Overview Tab */}
+                  {activeTab === 'overview' && (
+                    <div className="max-w-none break-words overflow-hidden bg-white dark:bg-slate-800/60 p-4 sm:p-6 rounded-2xl border border-gray-100 dark:border-slate-700/80 shadow-xs">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                          h1: ({ node, ...props }) => (
+                            <h3 className="text-sm sm:text-base font-bold text-gray-900 dark:text-slate-100 mt-4 mb-2 first:mt-0" {...props} />
+                          ),
+                          h2: ({ node, ...props }) => (
+                            <h4 className="text-xs sm:text-sm font-bold text-gray-900 dark:text-slate-100 mt-3 mb-1.5 first:mt-0" {...props} />
+                          ),
+                          h3: ({ node, ...props }) => (
+                            <h5 className="text-xs sm:text-sm font-semibold text-gray-900 dark:text-slate-100 mt-2.5 mb-1 first:mt-0" {...props} />
+                          ),
+                          h4: ({ node, ...props }) => (
+                            <h6 className="text-xs font-semibold text-gray-800 dark:text-slate-200 mt-2 mb-1 first:mt-0" {...props} />
+                          ),
+                          p: ({ node, children, ...props }) => {
+                            const renderWithTimestamps = (item) => {
+                              if (typeof item !== 'string') return item;
+                              const parts = item.split(/(\b\d{1,2}:\d{2}(?::\d{2})?\b)/g);
+                              if (parts.length === 1) return item;
+                              return parts.map((part, pIdx) => {
+                                if (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(part)) {
+                                  return (
+                                    <button
+                                      key={pIdx}
+                                      type="button"
+                                      onClick={() => handleSeekToTime(part)}
+                                      className="inline-flex items-center px-1.5 py-0.5 mx-0.5 rounded text-[11px] sm:text-xs font-semibold bg-orange-100 hover:bg-orange-200 dark:bg-orange-950/50 dark:hover:bg-orange-900/60 text-orange-600 dark:text-orange-400 transition cursor-pointer"
+                                      title={`Jump to ${part}`}
+                                    >
+                                      ⏱️ {part}
+                                    </button>
+                                  );
+                                }
+                                return part;
+                              });
+                            };
+                            const processed = Array.isArray(children)
+                              ? children.map(renderWithTimestamps)
+                              : renderWithTimestamps(children);
+
+                            return (
+                              <p className="text-xs sm:text-sm font-normal text-gray-700 dark:text-slate-300 leading-relaxed mb-3 last:mb-0 break-words whitespace-pre-wrap" {...props}>
+                                {processed}
+                              </p>
+                            );
+                          },
+                          li: ({ node, children, ...props }) => {
+                            const renderWithTimestamps = (item) => {
+                              if (typeof item !== 'string') return item;
+                              const parts = item.split(/(\b\d{1,2}:\d{2}(?::\d{2})?\b)/g);
+                              if (parts.length === 1) return item;
+                              return parts.map((part, pIdx) => {
+                                if (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(part)) {
+                                  return (
+                                    <button
+                                      key={pIdx}
+                                      type="button"
+                                      onClick={() => handleSeekToTime(part)}
+                                      className="inline-flex items-center px-1.5 py-0.5 mx-0.5 rounded text-[11px] sm:text-xs font-semibold bg-orange-100 hover:bg-orange-200 dark:bg-orange-950/50 dark:hover:bg-orange-900/60 text-orange-600 dark:text-orange-400 transition cursor-pointer"
+                                      title={`Jump to ${part}`}
+                                    >
+                                      ⏱️ {part}
+                                    </button>
+                                  );
+                                }
+                                return part;
+                              });
+                            };
+                            const processed = Array.isArray(children)
+                              ? children.map(renderWithTimestamps)
+                              : renderWithTimestamps(children);
+
+                            return (
+                              <li className="leading-relaxed text-xs sm:text-sm text-gray-700 dark:text-slate-300" {...props}>
+                                {processed}
+                              </li>
+                            );
+                          },
+                          strong: ({ node, ...props }) => (
+                            <strong className="font-semibold text-gray-900 dark:text-slate-100" {...props} />
+                          ),
+                          a: ({ node, href, children, ...props }) => (
+                            <a
+                              href={href}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300 hover:underline font-medium break-all"
+                              {...props}
+                            >
+                              {children}
+                            </a>
+                          ),
+                          hr: () => <hr className="my-4 border-t border-gray-200 dark:border-slate-700/80" />,
+                          ul: ({ node, ...props }) => <ul className="list-disc pl-5 my-2 text-xs sm:text-sm space-y-1 text-gray-700 dark:text-slate-300" {...props} />,
+                          ol: ({ node, ...props }) => <ol className="list-decimal pl-5 my-2 text-xs sm:text-sm space-y-1 text-gray-700 dark:text-slate-300" {...props} />
+                        }}
+                      >
+                        {formattedVideoDescription || "No description available for this video."}
+                      </ReactMarkdown>
+                    </div>
+                  )}
+
+                  {/* Intuition Tab */}
+                  {activeTab === 'intuition' && (
+                    <div
+                      className="space-y-3 sm:space-y-3.5 no-tab-swipe"
+                      onTouchStart={(e) => e.stopPropagation()}
+                      onTouchMove={(e) => e.stopPropagation()}
+                      onTouchEnd={(e) => e.stopPropagation()}
+                    >
+                      {/* AI Notes & Core Intuition Card */}
+                      <div className="bg-slate-50/60 dark:bg-slate-900/30 p-2.5 sm:p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800/80 transition-colors duration-200 break-words overflow-hidden shadow-xs">
+                        {/* Streamlined Top Control Bar */}
+                        {/* Streamlined Top Control Bar */}
+                        <div className="bg-white dark:bg-slate-900/90 rounded-2xl border border-slate-200/80 dark:border-slate-800 p-2.5 sm:p-4 mb-4 shadow-2xs">
+                          {/* Row 1: Title & Main Action Tools */}
+                          <div className="flex items-center justify-between gap-1.5 sm:gap-4 pb-2.5 sm:pb-3 border-b border-slate-100 dark:border-slate-800">
+                            {/* Title & Topic Count */}
+                            <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0">
+                              <div className="p-1 sm:p-2 bg-gradient-to-br from-indigo-500 to-indigo-600 text-white rounded-lg sm:rounded-xl shadow-xs shrink-0">
+                                <Sparkles size={14} className="sm:size-[16px]" />
+                              </div>
+                              <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+                                <h3 className="text-xs sm:text-base font-bold text-slate-900 dark:text-white leading-tight m-0 whitespace-nowrap">
+                                  <span className="hidden sm:inline">AI Study Notes</span>
+                                  <span className="sm:hidden">AI Notes</span>
+                                </h3>
+                                {parsedIntuition?.totalPages && (
+                                  <span className="hidden sm:inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-indigo-50 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-900/60 shrink-0">
+                                    {parsedIntuition.totalPages} {parsedIntuition.totalPages === 1 ? 'Topic' : 'Topics'}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Top Controls: Code Editor, Language, Refresh, PDF */}
+                            <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+                              {/* Code Editor (Shown on medium+ screens where space permits) */}
+                              {isCodeEditorEnabled && (
+                                <button
+                                  onClick={() => handleOpenInCodeEditor()}
+                                  title="Open Code Editor & Compiler"
+                                  className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-800 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 border border-slate-200 dark:border-slate-700/80 hover:border-emerald-400 text-slate-700 dark:text-slate-200 hover:text-emerald-700 dark:hover:text-emerald-400 font-bold text-xs transition cursor-pointer shrink-0"
+                                >
+                                  <Code2 size={13} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                  <span>Code Editor</span>
+                                </button>
+                              )}
+
+                              {/* Language Picker Dropdown */}
+                              <div className="relative shrink-0">
+                                <select
+                                  disabled={loadingIntuition}
+                                  onChange={(e) => fetchIntuition(e.target.value)}
+                                  value={selectedLanguage}
+                                  className="appearance-none pl-2 pr-5 sm:pl-2.5 sm:pr-6 py-1.5 rounded-xl text-[11px] sm:text-xs font-bold uppercase tracking-wider bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700/80 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer transition hover:border-indigo-300 max-w-[80px] sm:max-w-none"
+                                >
+                                  <option value="" disabled>Select</option>
+                                  {INDIAN_LANGS.map((lang) => (
+                                    <option key={lang} value={lang} className="text-gray-700 dark:text-slate-200">
+                                      {lang}
+                                    </option>
+                                  ))}
+                                </select>
+                                <div className="absolute right-1 sm:right-1.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                                  <ChevronRight size={9} className="rotate-90 sm:size-[10px]" />
+                                </div>
+                              </div>
+
+                              {/* Regenerate / Refresh */}
+                              <button
+                                disabled={loadingIntuition}
+                                onClick={() => fetchIntuition(selectedLanguage, true)}
+                                title="Regenerate Notes"
+                                className="p-1.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700/80 text-slate-500 hover:text-indigo-600 hover:border-indigo-300 disabled:opacity-50 transition cursor-pointer shadow-2xs shrink-0"
+                              >
+                                <RefreshCw size={12} className={`sm:size-[13px] ${loadingIntuition ? 'animate-spin' : ''}`} />
+                              </button>
+
+                              {/* 📥 1-Click A4 PDF Download Button */}
+                              <button
+                                disabled={downloadingPdf}
+                                onClick={handleDownloadPdf}
+                                title="Download complete study notes as A4 PDF"
+                                className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold text-[11px] sm:text-xs shadow-xs transition active:scale-95 flex items-center gap-1 sm:gap-1.5 cursor-pointer shrink-0"
+                              >
+                                {downloadingPdf ? (
+                                  <RefreshCw size={12} className="animate-spin shrink-0 sm:size-[13px]" />
+                                ) : (
+                                  <Download size={12} className="shrink-0 sm:size-[13px]" />
+                                )}
+                                <span className="hidden sm:inline">{downloadingPdf ? "Saving PDF..." : "Download PDF"}</span>
+                                <span className="sm:hidden">{downloadingPdf ? "..." : "PDF"}</span>
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Row 2: Reading Navigation & 1-Click Paper Style Switcher */}
+                          {parsedIntuition && !loadingIntuition && (
+                            <div className="pt-2.5 sm:pt-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-2.5">
+                              {/* Left: Topic Selector Segmented Tabs */}
+                              <div className="flex items-center gap-1 overflow-x-auto scrollbar-none py-0.5 min-w-0 no-tab-swipe p-1 bg-slate-100 dark:bg-slate-800/80 rounded-xl w-full sm:w-auto">
+                                {parsedIntuition.totalPages > 1 ? (
+                                  <>
+                                    {parsedIntuition.pages.map((p, idx) => {
+                                      const isActive = !isContinuousView && activeChapterIndex === idx;
+                                      return (
+                                        <button
+                                          key={idx}
+                                          onClick={() => {
+                                            setIsContinuousView(false);
+                                            handleTopicChange(idx);
+                                          }}
+                                          className={`flex-1 sm:flex-initial text-center justify-center px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition cursor-pointer shrink-0 ${
+                                            isActive
+                                              ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                                              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                                          }`}
+                                        >
+                                          Topic {p.pageNumber || idx + 1}
+                                        </button>
+                                      );
+                                    })}
+                                    {/* Continuous / Read All Switcher */}
+                                    <button
+                                      onClick={() => setIsContinuousView(!isContinuousView)}
+                                      title={isContinuousView ? "Switch to single topic view" : "Read all topics continuously"}
+                                      className={`flex-1 sm:flex-initial text-center justify-center flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer whitespace-nowrap shrink-0 ${
+                                        isContinuousView
+                                          ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                                      }`}
+                                    >
+                                      <Layers size={12} className="shrink-0" />
+                                      <span>Read All</span>
+                                    </button>
+                                  </>
+                                ) : (
+                                  <div className="flex items-center gap-1.5 px-3 py-1 text-xs font-bold text-slate-700 dark:text-slate-300">
+                                    <BookOpen size={13} className="text-indigo-600 dark:text-indigo-400" />
+                                    <span>Study Notes</span>
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Right: Note Style Segmented Pill Switcher */}
+                              <div className="grid grid-cols-4 sm:flex items-center p-1 bg-slate-100 dark:bg-slate-800/80 rounded-xl w-full sm:w-auto gap-1 sm:gap-0 sm:ml-auto shrink-0">
+                                {/* Clean / Standard Reading */}
+                                <button
+                                  onClick={() => handleSetNotesViewMode('clean')}
+                                  title="Standard Clean Textbook View"
+                                  className={`justify-center px-2 sm:px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                                    notesViewMode === 'clean'
+                                      ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                                  }`}
+                                >
+                                  <FileText size={13} className="shrink-0" />
+                                  <span>Clean</span>
+                                </button>
+
+                                {/* Ruled Notebook Paper */}
+                                <button
+                                  onClick={() => handleSetNotesViewMode('ruled')}
+                                  title="Authentic Lined Notebook Paper"
+                                  className={`justify-center px-2 sm:px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                                    notesViewMode === 'ruled'
+                                      ? 'bg-amber-500 text-white shadow-xs'
+                                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                                  }`}
+                                >
+                                  <PenTool size={13} className="shrink-0" />
+                                  <span>Ruled</span>
+                                </button>
+
+                                {/* Grid / Graph Paper */}
+                                <button
+                                  onClick={() => handleSetNotesViewMode('grid')}
+                                  title="STEM & Math Grid Graph Paper"
+                                  className={`justify-center px-2 sm:px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                                    notesViewMode === 'grid'
+                                      ? 'bg-sky-500 text-white shadow-xs'
+                                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                                  }`}
+                                >
+                                  <Grid size={13} className="shrink-0" />
+                                  <span>Grid</span>
+                                </button>
+
+                                {/* Chalkboard Mode */}
+                                <button
+                                  onClick={() => handleSetNotesViewMode('chalkboard')}
+                                  title="Dark Classroom Chalkboard"
+                                  className={`justify-center px-2 sm:px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                                    notesViewMode === 'chalkboard'
+                                      ? 'bg-slate-950 text-yellow-300 shadow-xs border border-slate-700'
+                                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                                  }`}
+                                >
+                                  <Moon size={13} className="shrink-0" />
+                                  <span>Chalk</span>
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {loadingIntuition ? (
+                          <div className="flex flex-col items-center justify-center py-12 px-4 text-center max-w-md mx-auto">
+                            <div className="relative mb-6">
+                              <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-indigo-600"></div>
+                              <div className="absolute inset-0 flex items-center justify-center font-bold text-indigo-600 text-lg">
+                                {intuitionCountdown}
+                              </div>
+                            </div>
+                            <p className="font-semibold text-sm sm:text-base animate-pulse text-indigo-600 dark:text-indigo-400 text-center m-0">
+                              Synthesizing textbook-quality digital study notes...
+                            </p>
+                            <p className="text-xs text-indigo-500/70 dark:text-indigo-400/70 mt-2 text-center max-w-sm m-0">
+                              Classifying subject curriculum & constructing comprehensive topic study notes
+                            </p>
+                          </div>
+                        ) : parsedIntuition ? (
+                          <div className="space-y-3 sm:space-y-4">
+
+                            {/* Content Display: Continuous Mode vs Paginated Topic Mode */}
+                            {isContinuousView && parsedIntuition.totalPages > 1 ? (
+                              isNotebookView ? (
+                                <div className="space-y-6 sm:space-y-10">
+                                  {parsedIntuition.pages.map((page, idx) => (
+                                    <HandwrittenNotebookView
+                                      key={idx}
+                                      content={preprocessMarkdown(page.content)}
+                                      title={page.title}
+                                      pageNumber={page.pageNumber || idx + 1}
+                                      totalPages={parsedIntuition.totalPages}
+                                      paperStyle={notesViewMode === 'clean' ? 'ruled' : notesViewMode}
+                                      onCopy={() => handleCopyChapter(page.content)}
+                                      copied={copiedChapter}
+                                      onOpenInCodeEditor={handleOpenInCodeEditor}
+                                      CodeEditorBlock={CodeEditorBlock}
+                                    />
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="space-y-4 sm:space-y-8">
+                                  {parsedIntuition.pages.map((page, idx) => (
+                                    <div key={idx} className="bg-white/80 dark:bg-slate-900/60 p-3 sm:p-6 rounded-xl border border-indigo-100/80 dark:border-slate-800 shadow-2xs">
+                                      <div className="flex items-center justify-between pb-2 sm:pb-3 mb-2.5 sm:mb-4 border-b border-gray-100 dark:border-slate-800">
+                                        <h3 className="text-sm sm:text-lg font-bold text-indigo-950 dark:text-indigo-200 m-0">
+                                          <ReactMarkdown
+                                            remarkPlugins={[remarkGfm, remarkMath]}
+                                            rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+                                            components={{
+                                              p: ({ node, ...props }) => <span {...props} />,
+                                            }}
+                                          >
+                                            {preprocessMarkdown(page.title || '')}
+                                          </ReactMarkdown>
+                                        </h3>
+                                        <button
+                                          onClick={() => handleCopyChapter(page.content)}
+                                          title="Copy Topic Notes"
+                                          className="p-1 rounded text-gray-400 hover:text-indigo-600 transition cursor-pointer"
+                                        >
+                                          <Copy size={12} />
+                                        </button>
+                                      </div>
+                                      <div className="prose max-w-none text-gray-800 dark:text-gray-200 leading-relaxed intuition-markdown">
+                                        <ReactMarkdown
+                                          remarkPlugins={[remarkGfm, remarkMath]}
+                                          rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+                                          components={{
+                                            h1: ({ node, ...props }) => <h1 className="text-lg sm:text-xl font-bold text-gray-900 dark:text-white mt-5 mb-2.5 break-words" {...props} />,
+                                            h2: ({ node, ...props }) => <h2 className="text-base sm:text-lg font-bold text-indigo-900 dark:text-indigo-200 mt-4 mb-2 break-words" {...props} />,
+                                            h3: ({ node, ...props }) => <h3 className="text-sm sm:text-base font-bold text-indigo-900 dark:text-indigo-300 first:mt-2 mt-4 mb-2 break-words" {...props} />,
+                                            h4: ({ node, ...props }) => <h4 className="text-xs sm:text-sm font-semibold text-gray-800 dark:text-gray-200 mt-3 mb-1.5 break-words" {...props} />,
+                                            strong: ({ node, ...props }) => <strong className="font-bold text-gray-900 dark:text-gray-100 break-words" {...props} />,
+                                            ul: ({ node, ...props }) => <ul className="list-disc pl-5 mt-2 space-y-2 text-gray-700 dark:text-gray-300 break-words" {...props} />,
+                                            ol: ({ node, ...props }) => <ol className="list-decimal pl-5 mt-2 space-y-2 text-gray-700 dark:text-gray-300 break-words" {...props} />,
+                                            li: ({ node, ...props }) => <li className="text-gray-700 dark:text-gray-300 break-words leading-relaxed [&>p]:my-1" {...props} />,
+                                            p: ({ node, ...props }) => <p className="mb-4 text-gray-800 dark:text-gray-300 break-words leading-relaxed" {...props} />,
+                                            pre: ({ node, children, ...props }) => <>{children}</>,
+                                            code: ({ node, inline, className, children, ...props }) => {
+                                              const match = /language-([a-zA-Z0-9_+#-]+)/.exec(className || '');
+                                              const contentStr = String(children || '');
+                                              const isMultiLine = contentStr.includes('\n');
+                                              const isBlock = inline === false || Boolean(match) || isMultiLine;
+
+                                              if (!isBlock) {
+                                                return (
+                                                  <code className="bg-indigo-100/80 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 px-1.5 py-0.5 rounded-md font-mono text-[11.5px] sm:text-xs font-semibold border border-indigo-200/50 dark:border-indigo-800/50 break-all" {...props}>
+                                                    {children}
+                                                  </code>
+                                                );
+                                              }
+                                              return <CodeEditorBlock className={className || 'language-python'} onOpenInEditor={handleOpenInCodeEditor} {...props}>{children}</CodeEditorBlock>;
+                                            },
+                                            table: ({ node, ...props }) => (
+                                              <div
+                                                className="overflow-x-auto my-4 rounded-xl border border-gray-200 dark:border-slate-700/80 shadow-2xs no-tab-swipe"
+                                                onTouchStart={(e) => e.stopPropagation()}
+                                                onTouchMove={(e) => e.stopPropagation()}
+                                                onTouchEnd={(e) => e.stopPropagation()}
+                                              >
+                                                <table className="w-full text-xs sm:text-sm text-left border-collapse" {...props} />
+                                              </div>
+                                            ),
+                                            thead: ({ node, ...props }) => <thead className="bg-indigo-50/80 dark:bg-slate-800 text-indigo-950 dark:text-indigo-200 font-bold border-b border-gray-200 dark:border-slate-700" {...props} />,
+                                            tbody: ({ node, ...props }) => <tbody className="divide-y divide-gray-200 dark:divide-slate-800 bg-white dark:bg-slate-900/70" {...props} />,
+                                            tr: ({ node, ...props }) => <tr className="hover:bg-gray-50/50 dark:hover:bg-gray-800/30 transition-colors" {...props} />,
+                                            th: ({ node, ...props }) => <th className="px-3.5 py-2.5 font-semibold text-indigo-900 dark:text-indigo-200 border-r last:border-r-0 border-gray-200 dark:border-slate-700/60" {...props} />,
+                                            td: ({ node, ...props }) => <td className="px-3.5 py-2.5 text-gray-700 dark:text-slate-300 border-r last:border-r-0 border-gray-200 dark:border-slate-700/60" {...props} />,
+                                            blockquote: ({ node, ...props }) => <blockquote className="border-l-4 border-indigo-500 pl-4 py-1.5 my-3 italic text-gray-700 dark:text-gray-300 bg-indigo-50/40 dark:bg-indigo-950/20 rounded-r-lg" {...props} />
+                                          }}
+                                        >
+                                          {preprocessMarkdown(page.content)}
+                                        </ReactMarkdown>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )
+                            ) : (
+                              /* Single or Active Topic Card */
+                              (() => {
+                                const currentPage = parsedIntuition.pages[activeChapterIndex] || parsedIntuition.pages[0];
+                                if (!currentPage) return null;
+
+                                if (isNotebookView) {
+                                  return (
+                                    <div ref={noteCardRef} className="space-y-4">
+                                      <AnimatePresence mode="wait" initial={false}>
+                                        <motion.div
+                                          key={activeChapterIndex}
+                                          initial={{ opacity: 0, y: 8 }}
+                                          animate={{ opacity: 1, y: 0 }}
+                                          exit={{ opacity: 0, y: -8 }}
+                                          transition={{ duration: 0.18, ease: "easeOut" }}
+                                        >
+                                          <HandwrittenNotebookView
+                                            content={preprocessMarkdown(currentPage.content)}
+                                            title={currentPage.title}
+                                            pageNumber={activeChapterIndex + 1}
+                                            totalPages={parsedIntuition.totalPages}
+                                            paperStyle={notesViewMode === 'clean' ? 'ruled' : notesViewMode}
+                                            onCopy={() => handleCopyChapter(currentPage.content)}
+                                            copied={copiedChapter}
+                                            onOpenInCodeEditor={handleOpenInCodeEditor}
+                                            CodeEditorBlock={CodeEditorBlock}
+                                          />
+                                        </motion.div>
+                                      </AnimatePresence>
+
+                                      {/* Bottom Topic Pagination Controls */}
+                                      {parsedIntuition.totalPages > 1 && (
+                                        <div className="bg-white/90 dark:bg-slate-900/60 p-3 sm:p-4 rounded-xl border border-indigo-100/90 dark:border-slate-800 shadow-2xs flex items-center justify-between">
+                                          <button
+                                            disabled={activeChapterIndex === 0}
+                                            onClick={() => handleTopicChange(Math.max(0, activeChapterIndex - 1))}
+                                            className="flex items-center gap-1 px-2.5 py-1.5 sm:px-3 sm:py-1.5 rounded-lg text-[11px] sm:text-xs font-bold text-gray-600 dark:text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                                          >
+                                            <ChevronLeft size={13} className="sm:size-[14px]" />
+                                            <span>Previous</span>
+                                          </button>
+
+                                          <span className="text-[11px] sm:text-xs font-bold text-gray-400 dark:text-slate-500">
+                                            {activeChapterIndex + 1} / {parsedIntuition.totalPages}
+                                          </span>
+
+                                          {activeChapterIndex < parsedIntuition.totalPages - 1 ? (
+                                            <button
+                                              onClick={() => handleTopicChange(Math.min(parsedIntuition.totalPages - 1, activeChapterIndex + 1))}
+                                              className="flex items-center gap-1 px-3 py-1.5 sm:px-3.5 sm:py-1.5 rounded-lg text-[11px] sm:text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition cursor-pointer"
+                                            >
+                                              <span>Next Topic</span>
+                                              <ChevronRight size={13} className="sm:size-[14px]" />
+                                            </button>
+                                          ) : (
+                                            <button
+                                              onClick={() => handleSelectTab('quiz', true)}
+                                              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-[11px] sm:text-xs font-bold bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white shadow-xs transition-all cursor-pointer active:scale-95"
+                                            >
+                                              <CheckCircle size={13} className="sm:size-[14px]" />
+                                              <span>Take Quiz</span>
+                                            </button>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                }
+
+                                return (
+                                  <div ref={noteCardRef} className="bg-white/90 dark:bg-slate-900/60 p-3 sm:p-6 rounded-xl sm:rounded-2xl border border-indigo-100/90 dark:border-slate-800 shadow-2xs overflow-hidden">
+                                    <AnimatePresence mode="wait" initial={false}>
+                                      <motion.div
+                                        key={activeChapterIndex}
+                                        initial={{ opacity: 0, y: 8 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        exit={{ opacity: 0, y: -8 }}
+                                        transition={{ duration: 0.18, ease: "easeOut" }}
+                                        className="space-y-3 sm:space-y-4"
+                                      >
+                                        {/* Topic Header */}
+                                        <div className="flex items-center justify-between pb-2 sm:pb-3 mb-2.5 sm:mb-4 border-b border-gray-100 dark:border-slate-800">
+                                          <div className="min-w-0 pr-2">
+                                            {parsedIntuition.totalPages > 1 && (
+                                              <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-wider text-indigo-600 dark:text-indigo-400 block mb-0.5">
+                                                Topic {activeChapterIndex + 1} of {parsedIntuition.totalPages}
+                                              </span>
+                                            )}
+                                            <h3 className="text-sm sm:text-lg font-bold text-gray-900 dark:text-white m-0">
+                                              <ReactMarkdown
+                                                remarkPlugins={[remarkGfm, remarkMath]}
+                                                rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+                                                components={{
+                                                  p: ({ node, ...props }) => <span {...props} />,
+                                                }}
+                                              >
+                                                {preprocessMarkdown(currentPage.title || '')}
+                                              </ReactMarkdown>
+                                            </h3>
+                                          </div>
+
+                                          <button
+                                            onClick={() => handleCopyChapter(currentPage.content)}
+                                            title="Copy Topic Notes"
+                                            className="flex items-center gap-1 px-2 py-1 sm:px-2.5 sm:py-1 rounded-lg text-[11px] sm:text-xs font-semibold bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-300 hover:text-indigo-600 transition cursor-pointer shrink-0"
+                                          >
+                                            <Copy size={11} className="sm:size-[12px]" />
+                                            <span>{copiedChapter ? "Copied!" : "Copy"}</span>
+                                          </button>
+                                        </div>
+
+                                        {/* Markdown Content */}
+                                        <div className="prose max-w-none text-gray-800 dark:text-gray-200 leading-relaxed intuition-markdown">
+                                          <ReactMarkdown
+                                            remarkPlugins={[remarkGfm, remarkMath]}
+                                            rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+                                            components={{
+                                              h1: ({ node, ...props }) => <h1 className="text-lg sm:text-xl font-bold text-gray-900 dark:text-white mt-5 mb-2.5 break-words" {...props} />,
+                                              h2: ({ node, ...props }) => <h2 className="text-base sm:text-lg font-bold text-indigo-900 dark:text-indigo-200 mt-4 mb-2 break-words" {...props} />,
+                                              h3: ({ node, ...props }) => <h3 className="text-sm sm:text-base font-bold text-indigo-900 dark:text-indigo-300 first:mt-2 mt-4 mb-2 break-words" {...props} />,
+                                              h4: ({ node, ...props }) => <h4 className="text-xs sm:text-sm font-semibold text-gray-800 dark:text-gray-200 mt-3 mb-1.5 break-words" {...props} />,
+                                              strong: ({ node, ...props }) => <strong className="font-bold text-gray-900 dark:text-gray-100 break-words" {...props} />,
+                                              ul: ({ node, ...props }) => <ul className="list-disc pl-5 mt-2 space-y-2 text-gray-700 dark:text-gray-300 break-words" {...props} />,
+                                              ol: ({ node, ...props }) => <ol className="list-decimal pl-5 mt-2 space-y-2 text-gray-700 dark:text-gray-300 break-words" {...props} />,
+                                              li: ({ node, ...props }) => <li className="text-gray-700 dark:text-gray-300 break-words leading-relaxed [&>p]:my-1" {...props} />,
+                                              p: ({ node, ...props }) => <p className="mb-4 text-gray-800 dark:text-gray-300 break-words leading-relaxed" {...props} />,
+                                              pre: ({ node, children, ...props }) => <>{children}</>,
+                                              code: ({ node, inline, className, children, ...props }) => {
+                                                const match = /language-([a-zA-Z0-9_+#-]+)/.exec(className || "");
+                                                const contentStr = String(children || '');
+                                                const isMultiLine = contentStr.includes('\n');
+                                                const isBlock = inline === false || Boolean(match) || isMultiLine;
+
+                                                if (!isBlock) {
+                                                  return (
+                                                    <code className="bg-indigo-100/80 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 px-1.5 py-0.5 rounded-md font-mono text-[11.5px] sm:text-xs font-semibold border border-indigo-200/50 dark:border-indigo-800/50 break-all" {...props}>
+                                                      {children}
+                                                    </code>
+                                                  );
+                                                }
+                                                return <CodeEditorBlock className={className || 'language-python'} onOpenInEditor={handleOpenInCodeEditor} {...props}>{children}</CodeEditorBlock>;
+                                              },
+                                              table: ({ node, ...props }) => (
+                                                <div
+                                                  className="overflow-x-auto my-4 rounded-xl border border-gray-200 dark:border-slate-700/80 shadow-2xs no-tab-swipe"
+                                                  onTouchStart={(e) => e.stopPropagation()}
+                                                  onTouchMove={(e) => e.stopPropagation()}
+                                                  onTouchEnd={(e) => e.stopPropagation()}
+                                                >
+                                                  <table className="w-full text-xs sm:text-sm text-left border-collapse" {...props} />
+                                                </div>
+                                              ),
+                                              thead: ({ node, ...props }) => <thead className="bg-indigo-50/80 dark:bg-slate-800 text-indigo-950 dark:text-indigo-200 font-bold border-b border-gray-200 dark:border-slate-700" {...props} />,
+                                              tbody: ({ node, ...props }) => <tbody className="divide-y divide-gray-200 dark:divide-slate-800 bg-white dark:bg-slate-900/70" {...props} />,
+                                              tr: ({ node, ...props }) => <tr className="hover:bg-gray-50/50 dark:hover:bg-gray-800/30 transition-colors" {...props} />,
+                                              th: ({ node, ...props }) => <th className="px-3.5 py-2.5 font-semibold text-indigo-900 dark:text-indigo-200 border-r last:border-r-0 border-gray-200 dark:border-slate-700/60" {...props} />,
+                                              td: ({ node, ...props }) => <td className="px-3.5 py-2.5 text-gray-700 dark:text-slate-300 border-r last:border-r-0 border-gray-200 dark:border-slate-700/60" {...props} />,
+                                              blockquote: ({ node, ...props }) => <blockquote className="border-l-4 border-indigo-500 pl-4 py-1.5 my-3 italic text-gray-700 dark:text-gray-300 bg-indigo-50/40 dark:bg-indigo-950/20 rounded-r-lg" {...props} />
+                                            }}
+                                          >
+                                            {preprocessMarkdown(currentPage.content)}
+                                          </ReactMarkdown>
+                                        </div>
+                                      </motion.div>
+                                    </AnimatePresence>
+
+                                    {/* Bottom Topic Pagination Controls */}
+                                    {parsedIntuition.totalPages > 1 && (
+                                      <div className="flex items-center justify-between pt-3 mt-4 sm:pt-4 sm:mt-6 border-t border-gray-100 dark:border-slate-800">
+                                        <button
+                                          disabled={activeChapterIndex === 0}
+                                          onClick={() => handleTopicChange(Math.max(0, activeChapterIndex - 1))}
+                                          className="flex items-center gap-1 px-2.5 py-1.5 sm:px-3 sm:py-1.5 rounded-lg text-[11px] sm:text-xs font-bold text-gray-600 dark:text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                                        >
+                                          <ChevronLeft size={13} className="sm:size-[14px]" />
+                                          <span>Previous</span>
+                                        </button>
+
+                                        <span className="text-[11px] sm:text-xs font-bold text-gray-400 dark:text-slate-500">
+                                          {activeChapterIndex + 1} / {parsedIntuition.totalPages}
+                                        </span>
+
+                                        {activeChapterIndex < parsedIntuition.totalPages - 1 ? (
+                                          <button
+                                            onClick={() => handleTopicChange(Math.min(parsedIntuition.totalPages - 1, activeChapterIndex + 1))}
+                                            className="flex items-center gap-1 px-3 py-1.5 sm:px-3.5 sm:py-1.5 rounded-lg text-[11px] sm:text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition cursor-pointer"
+                                          >
+                                            <span>Next Topic</span>
+                                            <ChevronRight size={13} className="sm:size-[14px]" />
+                                          </button>
+                                        ) : (
+                                          <button
+                                            onClick={() => handleSelectTab('quiz', true)}
+                                            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-[11px] sm:text-xs font-bold bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white shadow-xs transition-all cursor-pointer active:scale-95"
+                                          >
+                                            <CheckCircle size={13} className="sm:size-[14px]" />
+                                            <span>Take Quiz</span>
+                                          </button>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()
+                            )}
+                          </div>
+                        ) : (
+                          <div className="text-center py-10 text-gray-500 dark:text-gray-400">
+                            <p>No study notes generated yet.</p>
+                            <button
+                              onClick={() => fetchIntuition()}
+                              className="mt-3 px-4 py-2 bg-indigo-600 text-white font-bold text-xs rounded-xl shadow-sm hover:bg-indigo-700 cursor-pointer"
+                            >
+                              Generate Study Notes Now
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Code Editor Tab */}
+                  {activeTab === 'code-editor' && (
+                    <div className="space-y-4 no-tab-swipe">
+                      <ClassroomCodeEditor
+                        key={videoId}
+                        code={editorCode}
+                        language={editorLanguage}
+                        videoId={videoId}
+                        onCodeChange={handleEditorCodeChange}
+                        onLanguageChange={handleEditorLanguageChange}
+                        onHideTab={() => toggleCodeEditorMode(false)}
+                      />
+                    </div>
+                  )}
+
+                  {/* Ask AI Chatbot Tab */}
+                  {activeTab === 'ai-chat' && (
+                    <div
+                      onClick={() => {
+                        const el = tabsContainerRef.current || document.getElementById('classroom-tabs-bar');
+                        if (el && window.scrollY < (el.offsetTop || 150) - 15) {
+                          scrollToTabs(true);
+                        }
+                      }}
+                      className="bg-white dark:bg-slate-900 rounded-2xl border border-indigo-100 dark:border-slate-800 shadow-sm flex flex-col h-[calc(100dvh-68px)] sm:h-[calc(100dvh-78px)] min-h-[500px] overflow-hidden"
+                    >
+                      {/* Chat Header */}
+                      <div className="flex items-center justify-between gap-2.5 sm:gap-3 p-3 sm:p-4 border-b border-gray-100 dark:border-slate-800 shrink-0 bg-white dark:bg-slate-900">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="p-2 sm:p-2.5 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl text-white shadow-sm shrink-0">
+                            <Bot size={18} className="sm:size-5" />
+                          </div>
+                          <div className="min-w-0">
+                            <h4 className="text-xs sm:text-sm font-bold text-gray-900 dark:text-white flex items-center gap-1.5 m-0">
+                              <span className="truncate">AI Lecture Doubt Solver & Chatbot</span>
+                              <span className="hidden sm:inline-flex px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider bg-indigo-100 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 shrink-0">
+                                Live Tutor
+                              </span>
+                            </h4>
+                            <p className="text-[11px] sm:text-xs text-gray-500 dark:text-slate-400 m-0 mt-0.5 truncate">
+                              Ask any doubt or question from <strong className="text-gray-700 dark:text-slate-200 font-semibold">{video?.name}</strong>
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            onClick={scrollToVideo}
+                            className="p-1.5 sm:p-2 text-gray-500 hover:text-orange-600 dark:text-slate-400 dark:hover:text-orange-400 bg-gray-50 hover:bg-orange-50 dark:bg-slate-800 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 transition-colors cursor-pointer rounded-xl flex items-center justify-center shadow-xs active:scale-95 shrink-0"
+                            title="Scroll up to Video"
+                            aria-label="Scroll to Video"
+                          >
+                            <ChevronUp size={16} className="sm:size-[18px]" />
+                          </button>
+                          <button
+                            onClick={handleStartNewChat}
+                            disabled={aiChatMessages.length === 0 && !aiChatInput}
+                            className="p-1.5 sm:p-2 text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 border border-indigo-200 dark:border-indigo-800 transition-colors cursor-pointer rounded-xl flex items-center justify-center shadow-xs active:scale-95 shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+                            title="Start New Chat"
+                            aria-label="New Chat"
+                          >
+                            <Plus size={16} className="sm:size-[18px]" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Chat Paper Style Switcher Toolbar: Clean / Ruled / Grid / Chalk */}
+                      <div className="p-2 sm:p-2.5 bg-slate-50/90 dark:bg-slate-900/90 border-b border-gray-100 dark:border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-2 shrink-0">
+                        <div className="flex items-center justify-between w-full sm:w-auto gap-2">
+                          <div className="flex items-center gap-1.5 px-2 py-0.5 text-xs font-bold text-slate-700 dark:text-slate-300">
+                            <PenTool size={13} className="text-amber-500 shrink-0" />
+                            <span className="truncate">Tutor Notes Style:</span>
+                          </div>
+                          <span className="sm:hidden text-[10px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/60 px-2 py-0.5 rounded-full capitalize">
+                            {chatViewMode === 'ruled' ? '✍️ Ruled' : (chatViewMode === 'grid' ? '▦ Grid' : (chatViewMode === 'chalkboard' ? '🌙 Chalk' : '📄 Clean'))}
+                          </span>
+                        </div>
+
+                        {/* Note Style Segmented Pill Switcher (4-column responsive grid on mobile) */}
+                        <div className="grid grid-cols-4 sm:flex items-center p-1 bg-slate-100 dark:bg-slate-800/80 rounded-xl w-full sm:w-auto gap-1 sm:gap-0 sm:ml-auto shrink-0">
+                          {/* Clean / Standard Reading */}
+                          <button
+                            type="button"
+                            onClick={() => handleSetChatViewMode('clean')}
+                            title="Standard Clean Chat Cards"
+                            className={`justify-center px-2 sm:px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                              chatViewMode === 'clean'
+                                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                            }`}
+                          >
+                            <FileText size={13} className="shrink-0" />
+                            <span>Clean</span>
+                          </button>
+
+                          {/* Ruled Notebook Paper */}
+                          <button
+                            type="button"
+                            onClick={() => handleSetChatViewMode('ruled')}
+                            title="Authentic Lined Handwritten Notebook"
+                            className={`justify-center px-2 sm:px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                              chatViewMode === 'ruled'
+                                ? 'bg-amber-500 text-white shadow-xs'
+                                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                            }`}
+                          >
+                            <PenTool size={13} className="shrink-0" />
+                            <span>Ruled</span>
+                          </button>
+
+                          {/* Grid / Graph Paper */}
+                          <button
+                            type="button"
+                            onClick={() => handleSetChatViewMode('grid')}
+                            title="STEM & Math Grid Graph Paper"
+                            className={`justify-center px-2 sm:px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                              chatViewMode === 'grid'
+                                ? 'bg-sky-500 text-white shadow-xs'
+                                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                            }`}
+                          >
+                            <Grid size={13} className="shrink-0" />
+                            <span>Grid</span>
+                          </button>
+
+                          {/* Chalkboard Mode */}
+                          <button
+                            type="button"
+                            onClick={() => handleSetChatViewMode('chalkboard')}
+                            title="Dark Classroom Chalkboard"
+                            className={`justify-center px-2 sm:px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                              chatViewMode === 'chalkboard'
+                                ? 'bg-slate-950 text-yellow-300 shadow-xs border border-slate-700'
+                                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                            }`}
+                          >
+                            <Moon size={13} className="shrink-0" />
+                            <span>Chalk</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Quick Doubt Suggestion Prompts - Dynamically Tailored to Lecture */}
+                      {aiChatMessages.length === 0 && (
+                        <div className={`flex-1 min-h-0 overflow-y-auto custom-scrollbar p-3 sm:p-4 flex flex-col justify-start transition-colors ${
+                          chatViewMode === 'chalkboard'
+                            ? 'bg-slate-950'
+                            : (chatViewMode !== 'clean'
+                                ? 'bg-amber-50/20 dark:bg-slate-900'
+                                : 'bg-gradient-to-b from-indigo-50/20 via-white to-white dark:from-slate-900/50 dark:via-slate-900 dark:to-slate-900')
+                        }`}>
+                          <div className="w-full space-y-2.5 sm:space-y-3">
+                            {/* Top Header Bar with Subject Badge & Shuffle Action */}
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-1.5 text-[10px] sm:text-xs font-bold uppercase tracking-wider text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/70 border border-indigo-200/80 dark:border-indigo-800/80 px-2.5 py-1 rounded-lg">
+                                <Sparkles size={12} className="text-indigo-500" />
+                                <span className="truncate max-w-[190px] sm:max-w-xs">{parsedIntuition?.categoryLabel || 'Topic Doubt Solver'}</span>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => setSuggestionSeed(s => s + 1)}
+                                className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-200 bg-white dark:bg-slate-800 border border-indigo-100 dark:border-slate-700 px-2.5 py-1 rounded-lg transition shadow-2xs hover:shadow-xs active:scale-95 cursor-pointer"
+                                title="Shuffle suggested questions"
+                              >
+                                <Shuffle size={12} />
+                                <span>Shuffle</span>
+                              </button>
+                            </div>
+
+                            {/* Friendly Handwritten Notebook Tutor Info Banner */}
+                            {chatViewMode !== 'clean' && (
+                              <div className={`p-3 rounded-xl border flex items-center gap-2.5 transition-all ${
+                                chatViewMode === 'chalkboard'
+                                  ? 'bg-slate-900/80 border-slate-700 text-yellow-200'
+                                  : (chatViewMode === 'grid'
+                                      ? 'bg-sky-50/80 dark:bg-sky-950/20 border-sky-200/80 dark:border-sky-800/40 text-sky-900 dark:text-sky-200'
+                                      : 'bg-amber-50/80 dark:bg-amber-950/20 border-amber-200/80 dark:border-amber-800/40 text-amber-900 dark:text-amber-200')
+                              }`}>
+                                <PenTool size={15} className={chatViewMode === 'chalkboard' ? 'text-yellow-400 shrink-0' : (chatViewMode === 'grid' ? 'text-sky-500 shrink-0' : 'text-amber-500 shrink-0')} />
+                                <p className="text-xs font-medium leading-snug m-0">
+                                  <strong className="font-bold">Handwritten Tutor Notes Enabled:</strong> Ask any doubt about this lecture and your AI tutor will write notes on your {chatViewMode === 'chalkboard' ? 'classroom chalkboard' : (chatViewMode === 'grid' ? 'engineering grid paper' : 'lined notebook')}!
+                                </p>
+                              </div>
+                            )}
+
+                            {/* Suggestion Cards */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-2.5">
+                              {dynamicSuggestions.map((item, pIdx) => (
+                                <button
+                                  key={pIdx}
+                                  type="button"
+                                  onClick={() => handleSendAiQuestion(item.text)}
+                                  className="group flex flex-col p-2.5 sm:p-3 bg-white dark:bg-slate-800/90 hover:bg-indigo-50/70 dark:hover:bg-indigo-950/40 border border-gray-200/80 dark:border-slate-700/80 hover:border-indigo-300 dark:hover:border-indigo-600 rounded-xl transition-all duration-200 text-left shadow-2xs hover:shadow-xs active:scale-[0.98] cursor-pointer"
+                                >
+                                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                                    <div className="flex items-center gap-1.5 min-w-0">
+                                      <span className="text-sm shrink-0 select-none">{item.icon}</span>
+                                      {item.badge && (
+                                        <span className="text-[9px] font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/70 border border-indigo-100 dark:border-indigo-900/60 px-1.5 py-0.5 rounded shrink-0">
+                                          {item.badge}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span className="text-[11px] font-semibold text-indigo-500/70 group-hover:text-indigo-600 dark:text-indigo-400 transition-transform duration-200 group-hover:translate-x-0.5 shrink-0">
+                                      Ask →
+                                    </span>
+                                  </div>
+                                  <p className="text-xs sm:text-[13px] font-medium text-gray-800 dark:text-slate-200 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 leading-snug">
+                                    {item.text}
+                                  </p>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Message Stream Directly Connected to Input */}
+                      {aiChatMessages.length > 0 && (
+                        <div className={`space-y-4 overflow-y-auto p-3.5 sm:p-4 custom-scrollbar flex-1 min-h-0 transition-colors ${
+                          chatViewMode === 'chalkboard'
+                            ? 'bg-slate-950'
+                            : (chatViewMode !== 'clean'
+                                ? 'bg-amber-50/25 dark:bg-slate-950/40'
+                                : 'bg-white dark:bg-slate-900')
+                        }`}>
+                          {aiChatMessages.map((msg, mIdx) => {
+                            const followUps = msg.role === 'assistant' ? extractFollowUpQuestions(msg.content) : [];
+                            const displayContent = msg.role === 'assistant' ? cleanAiMessageContent(msg.content) : msg.content;
+                            const isAssistant = msg.role === 'assistant';
+                            const isHandwritten = isAssistant && chatViewMode !== 'clean';
+
+                            return (
+                              <div
+                                key={mIdx}
+                                className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start w-full'}`}
+                              >
+                                {msg.role === 'user' ? (
+                                  /* Student Question Bubble */
+                                  <div
+                                    className={`max-w-[85%] bg-gradient-to-r from-orange-500 to-amber-500 text-white rounded-2xl rounded-tr-xs shadow-sm p-3.5 sm:p-4 ${
+                                      chatViewMode !== 'clean'
+                                        ? 'font-handwriting text-base sm:text-lg leading-relaxed'
+                                        : 'text-xs sm:text-sm font-medium'
+                                    }`}
+                                  >
+                                    <div className="flex items-center gap-1.5 mb-1 text-[10px] uppercase tracking-wider font-bold text-white/85 font-sans">
+                                      <User size={11} />
+                                      <span>Your Question</span>
+                                    </div>
+                                    <p className="whitespace-pre-wrap leading-relaxed m-0 text-white">{msg.content}</p>
+                                  </div>
+                                ) : isHandwritten ? (
+                                  /* Handwritten Notebook / Chalkboard Assistant Response Card */
+                                  <div
+                                    className={`w-full rounded-2xl p-4 sm:p-6 transition-all duration-200 shadow-sm overflow-hidden select-text relative border ${
+                                      chatViewMode === 'chalkboard'
+                                        ? 'notebook-chalkboard-paper text-slate-100 border-slate-700/80 shadow-md'
+                                        : (chatViewMode === 'grid'
+                                            ? 'notebook-grid-paper border-sky-200/70 dark:border-slate-800'
+                                            : 'notebook-ruled-paper border-amber-200/80 dark:border-slate-800')
+                                    }`}
+                                  >
+                                    {/* Spiral Binder Ring Graphic */}
+                                    <div className="absolute top-0 left-0 right-0 h-3 flex items-center justify-around px-4 pointer-events-none opacity-40">
+                                      {[...Array(12)].map((_, i) => (
+                                        <div
+                                          key={i}
+                                          className="w-2.5 h-1 rounded-full bg-slate-400 dark:bg-slate-600 shadow-inner"
+                                        />
+                                      ))}
+                                    </div>
+
+                                    {/* Notebook Card Header */}
+                                    <div className={`relative pt-1 pb-2.5 mb-3 border-b flex items-center justify-between gap-2 ${
+                                      chatViewMode === 'chalkboard'
+                                        ? 'border-slate-700/80 text-slate-300'
+                                        : 'border-red-300/40 dark:border-rose-500/30 text-slate-400 dark:text-slate-500'
+                                    }`}>
+                                      <div className="flex items-center gap-2 pl-3 sm:pl-6">
+                                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] sm:text-xs font-black uppercase tracking-wider ${
+                                          chatViewMode === 'chalkboard'
+                                            ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                                            : 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-300/30'
+                                        }`}>
+                                          <PenTool size={11} />
+                                          <span>AI Tutor Notes</span>
+                                        </span>
+                                        <span className="text-[11px] font-bold italic hidden sm:inline text-slate-400 dark:text-slate-500">
+                                          • Doubt Solution
+                                        </span>
+                                      </div>
+
+                                      <div className="flex items-center gap-2 pr-1 text-xs font-bold">
+                                        <button
+                                          type="button"
+                                          onClick={() => handleCopyText(displayContent, mIdx)}
+                                          title="Copy answer"
+                                          className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] sm:text-xs font-bold transition cursor-pointer shrink-0 ${
+                                            chatViewMode === 'chalkboard'
+                                              ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700'
+                                              : 'bg-white dark:bg-slate-900 border border-amber-200/80 dark:border-slate-700 text-gray-700 dark:text-slate-300 hover:text-amber-600'
+                                          }`}
+                                        >
+                                          {copiedIndex === mIdx ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
+                                          <span>{copiedIndex === mIdx ? 'Copied' : 'Copy'}</span>
+                                        </button>
+                                      </div>
+                                    </div>
+
+                                    {/* Handwritten Body */}
+                                    <div className={`font-handwriting pl-3 sm:pl-6 text-sm sm:text-base leading-[28px] sm:leading-[30px] ${
+                                      chatViewMode === 'chalkboard'
+                                        ? 'text-slate-100'
+                                        : 'text-slate-900 dark:text-slate-200'
+                                    }`}>
+                                      <ReactMarkdown
+                                        remarkPlugins={[remarkGfm, remarkMath]}
+                                        rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+                                        components={{
+                                          h1: ({ node, ...props }) => (
+                                            <div className="my-3">
+                                              <h1 className={`font-handwriting text-xl sm:text-2xl font-bold tracking-wide m-0 ${
+                                                chatViewMode === 'chalkboard' ? 'text-yellow-200' : 'text-indigo-950 dark:text-amber-300'
+                                              }`} {...props} />
+                                              <div className={`h-1 w-20 rounded-full mt-1 ${
+                                                chatViewMode === 'chalkboard' ? 'bg-yellow-400 opacity-80' : 'bg-amber-400 opacity-70'
+                                              }`} />
+                                            </div>
+                                          ),
+                                          h2: ({ node, ...props }) => (
+                                            <div className="mt-4 mb-2">
+                                              <h2 className={`font-handwriting text-lg sm:text-xl font-bold inline-block px-1 border-b-2 m-0 ${
+                                                chatViewMode === 'chalkboard' 
+                                                  ? 'text-amber-200 border-amber-400' 
+                                                  : 'text-amber-900 dark:text-amber-200 border-amber-400/80'
+                                              }`} {...props} />
+                                            </div>
+                                          ),
+                                          h3: ({ node, ...props }) => (
+                                            <h3 className={`font-handwriting text-base sm:text-lg font-bold mt-3 mb-1 m-0 ${
+                                              chatViewMode === 'chalkboard' ? 'text-sky-300' : 'text-sky-950 dark:text-sky-300'
+                                            }`} {...props} />
+                                          ),
+                                          h4: ({ node, ...props }) => (
+                                            <h4 className={`font-handwriting text-sm sm:text-base font-bold mt-2 mb-1 ${
+                                              chatViewMode === 'chalkboard' ? 'text-emerald-300' : 'text-slate-900 dark:text-slate-200'
+                                            }`} {...props} />
+                                          ),
+                                          p: ({ node, ...props }) => (
+                                            <p className={`mb-3 leading-relaxed tracking-wide break-words ${
+                                              chatViewMode === 'chalkboard' ? 'text-slate-100' : 'text-slate-900 dark:text-slate-200'
+                                            }`} {...props} />
+                                          ),
+                                          strong: ({ node, ...props }) => (
+                                            <strong className={`font-bold tracking-wide ${
+                                              chatViewMode === 'chalkboard' ? 'highlighter-chalk' : 'highlighter-yellow'
+                                            }`} {...props} />
+                                          ),
+                                          em: ({ node, ...props }) => (
+                                            <em className={`font-semibold italic tracking-wide ${
+                                              chatViewMode === 'chalkboard' ? 'text-violet-300' : 'text-indigo-900 dark:text-indigo-300'
+                                            }`} {...props} />
+                                          ),
+                                          ul: ({ node, ...props }) => (
+                                            <ul className="my-2 space-y-1.5 list-none pl-1" {...props} />
+                                          ),
+                                          ol: ({ node, ...props }) => (
+                                            <ol className="my-2 space-y-1.5 list-decimal pl-5 font-bold" {...props} />
+                                          ),
+                                          li: ({ node, ...props }) => (
+                                            <li className={`flex items-start gap-2 leading-relaxed tracking-wide ${
+                                              chatViewMode === 'chalkboard' ? 'text-slate-100' : 'text-slate-900 dark:text-slate-200'
+                                            }`} {...props}>
+                                              <span className={`font-black text-xs select-none shrink-0 mt-1 ${
+                                                chatViewMode === 'chalkboard' ? 'text-yellow-300' : 'text-amber-500'
+                                              }`}>✦</span>
+                                              <div className="flex-1">{props.children}</div>
+                                            </li>
+                                          ),
+                                          blockquote: ({ node, ...props }) => (
+                                            <div className="my-4 relative max-w-xl">
+                                              <div className="sticky-note-card p-3 sm:p-4 font-handwriting text-xs sm:text-sm leading-relaxed">
+                                                <div className="washi-tape"></div>
+                                                <div className="flex items-center gap-1.5 font-bold text-amber-800 dark:text-amber-300 mb-1 text-[11px] uppercase tracking-wider">
+                                                  <span>⭐ Teacher Note / Key Insight</span>
+                                                </div>
+                                                <div className="italic text-slate-900">{props.children}</div>
+                                              </div>
+                                            </div>
+                                          ),
+                                          pre: ({ node, children, ...props }) => <>{children}</>,
+                                          code: ({ node, inline, className, children, ...props }) => {
+                                            const match = /language-([a-zA-Z0-9_+#-]+)/.exec(className || '');
+                                            const contentStr = String(children || '');
+                                            const isMultiLine = contentStr.includes('\n');
+                                            const isBlock = inline === false || Boolean(match) || isMultiLine;
+
+                                            if (!isBlock) {
+                                              return (
+                                                <code className={`font-mono text-xs px-1.5 py-0.5 rounded font-bold ${
+                                                  chatViewMode === 'chalkboard'
+                                                    ? 'bg-slate-800 text-amber-300 border border-slate-600'
+                                                    : 'bg-amber-100/80 dark:bg-slate-800 text-amber-900 dark:text-amber-300 border border-amber-300/50'
+                                                }`} {...props}>
+                                                  {children}
+                                                </code>
+                                              );
+                                            }
+                                            return (
+                                              <div className="my-3 font-sans">
+                                                <CodeEditorBlock className={className || 'language-python'} onOpenInEditor={handleOpenInCodeEditor} {...props}>
+                                                  {children}
+                                                </CodeEditorBlock>
+                                              </div>
+                                            );
+                                          },
+                                          table: ({ node, ...props }) => (
+                                            <div className={`overflow-x-auto my-3 rounded-xl border shadow-2xs font-sans text-xs ${
+                                              chatViewMode === 'chalkboard'
+                                                ? 'border-slate-700 bg-slate-900/60'
+                                                : 'border-amber-300/60 dark:border-slate-700'
+                                            }`}>
+                                              <table className="w-full border-collapse" {...props} />
+                                            </div>
+                                          ),
+                                          thead: ({ node, ...props }) => (
+                                            <thead className={`font-bold border-b ${
+                                              chatViewMode === 'chalkboard'
+                                                ? 'bg-slate-800 text-amber-300 border-slate-700'
+                                                : 'bg-amber-100/80 dark:bg-slate-800 text-amber-950 dark:text-amber-200 border-amber-300/60'
+                                            }`} {...props} />
+                                          ),
+                                          tbody: ({ node, ...props }) => (
+                                            <tbody className={`divide-y ${
+                                              chatViewMode === 'chalkboard'
+                                                ? 'divide-slate-800 bg-slate-900/40 text-slate-100'
+                                                : 'divide-amber-200/50 dark:divide-slate-800 bg-white/70 dark:bg-slate-900/60'
+                                            }`} {...props} />
+                                          ),
+                                          tr: ({ node, ...props }) => (
+                                            <tr className={`${
+                                              chatViewMode === 'chalkboard'
+                                                ? 'hover:bg-slate-800/40'
+                                                : 'hover:bg-amber-50/50 dark:hover:bg-slate-800/40'
+                                            } transition-colors`} {...props} />
+                                          ),
+                                          th: ({ node, ...props }) => (
+                                            <th className={`px-3 py-1.5 font-semibold border-r last:border-r-0 ${
+                                              chatViewMode === 'chalkboard'
+                                                ? 'text-amber-300 border-slate-700'
+                                                : 'text-amber-950 dark:text-amber-200 border-amber-200/50'
+                                            }`} {...props} />
+                                          ),
+                                          td: ({ node, ...props }) => (
+                                            <td className={`px-3 py-1.5 border-r last:border-r-0 ${
+                                              chatViewMode === 'chalkboard'
+                                                ? 'text-slate-100 border-slate-700'
+                                                : 'text-slate-700 dark:text-slate-300 border-amber-200/50'
+                                            }`} {...props} />
+                                          )
+                                        }}
+                                      >
+                                        {preprocessMarkdown(displayContent)}
+                                      </ReactMarkdown>
+
+                                      {/* Suggested Follow-ups Chips */}
+                                      {followUps.length > 0 && (
+                                        <div className={`mt-4 pt-3 border-t font-sans ${
+                                          chatViewMode === 'chalkboard' ? 'border-slate-700/80' : 'border-amber-200/70 dark:border-slate-700/80'
+                                        }`}>
+                                          <div className="text-[10px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wider mb-2 flex items-center gap-1">
+                                            <Sparkles size={11} />
+                                            <span>Suggested Follow-ups (click to ask):</span>
+                                          </div>
+                                          <div className="flex flex-col gap-1.5">
+                                            {followUps.map((fq, fIdx) => (
+                                              <button
+                                                key={fIdx}
+                                                type="button"
+                                                onClick={() => handleSendAiQuestion(fq)}
+                                                disabled={aiChatLoading}
+                                                className={`w-full text-left text-xs font-semibold px-3 py-2 rounded-xl transition cursor-pointer active:scale-[0.99] shadow-2xs disabled:opacity-50 flex items-start gap-2 group ${
+                                                  chatViewMode === 'chalkboard'
+                                                    ? 'bg-slate-800/90 hover:bg-slate-700 text-yellow-200 border border-slate-700'
+                                                    : 'bg-white/90 dark:bg-slate-900 text-amber-900 dark:text-amber-200 border border-amber-200/80 dark:border-slate-700 hover:bg-amber-50/80 dark:hover:bg-slate-800'
+                                                }`}
+                                              >
+                                                <span className="shrink-0 text-sm mt-0.5">💡</span>
+                                                <span className="flex-1 leading-snug group-hover:underline">{fq}</span>
+                                              </button>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+
+                                      {/* Notebook Bottom Signature */}
+                                      <div className={`mt-5 pt-2 border-t flex items-center justify-between text-[11px] font-handwriting pr-2 ${
+                                        chatViewMode === 'chalkboard'
+                                          ? 'border-slate-700/80 text-slate-400'
+                                          : 'border-slate-200/60 dark:border-slate-800 text-slate-400 dark:text-slate-500'
+                                      }`}>
+                                        <span>✍️ LearnProof AI Tutor</span>
+                                        <span>{new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  /* Standard Clean Assistant Message */
+                                  <div className="w-full bg-gray-50 dark:bg-slate-800/80 text-gray-800 dark:text-slate-200 rounded-2xl border border-gray-100 dark:border-slate-700 shadow-xs p-3.5 sm:p-4">
+                                    <div className="prose dark:prose-invert max-w-none text-xs sm:text-sm leading-relaxed intuition-markdown">
+                                      <ReactMarkdown
+                                        remarkPlugins={[remarkGfm, remarkMath]}
+                                        rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+                                        components={{
+                                          p: ({ node, ...props }) => <p className="mb-2 last:mb-0 break-words" {...props} />,
+                                          ul: ({ node, ...props }) => <ul className="list-disc pl-4 my-1 space-y-1" {...props} />,
+                                          li: ({ node, ...props }) => <li className="break-words leading-relaxed [&>p]:my-1" {...props} />,
+                                          pre: ({ node, children, ...props }) => <>{children}</>,
+                                          code: ({ node, inline, className, children, ...props }) => {
+                                            const match = /language-([a-zA-Z0-9_+#-]+)/.exec(className || '');
+                                            const contentStr = String(children || '');
+                                            const isMultiLine = contentStr.includes('\n');
+                                            const isBlock = inline === false || Boolean(match) || isMultiLine;
+
+                                            if (!isBlock) {
+                                              return (
+                                                <code className="bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 px-1 py-0.5 rounded font-mono text-xs font-semibold" {...props}>
+                                                  {children}
+                                                </code>
+                                              );
+                                            }
+                                            return <CodeEditorBlock className={className || 'language-python'} onOpenInEditor={handleOpenInCodeEditor} {...props}>{children}</CodeEditorBlock>;
+                                          }
+                                        }}
+                                      >
+                                        {preprocessMarkdown(displayContent)}
+                                      </ReactMarkdown>
+
+                                      {/* Interactive Follow-Up Questions Chips */}
+                                      {followUps.length > 0 && (
+                                        <div className="mt-3 pt-2.5 border-t border-indigo-100 dark:border-slate-700/80">
+                                          <div className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider mb-2 flex items-center gap-1">
+                                            <Sparkles size={11} />
+                                            <span>Suggested Follow-ups (click to ask):</span>
+                                          </div>
+                                          <div className="flex flex-col gap-1.5">
+                                            {followUps.map((fq, fIdx) => (
+                                              <button
+                                                key={fIdx}
+                                                type="button"
+                                                onClick={() => handleSendAiQuestion(fq)}
+                                                disabled={aiChatLoading}
+                                                className="w-full text-left text-xs font-semibold px-3 py-2 rounded-xl bg-white dark:bg-slate-900 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/80 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 hover:border-indigo-400 transition cursor-pointer active:scale-[0.99] shadow-2xs disabled:opacity-50 flex items-start gap-2 group"
+                                              >
+                                                <span className="shrink-0 text-sm mt-0.5">💡</span>
+                                                <span className="flex-1 leading-snug group-hover:text-indigo-600 dark:group-hover:text-indigo-200">{fq}</span>
+                                              </button>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+
+                                      <div className="mt-2 pt-2 border-t border-gray-200/50 dark:border-slate-700/50 flex items-center justify-end">
+                                        <button
+                                          type="button"
+                                          onClick={() => handleCopyText(displayContent, mIdx)}
+                                          className="text-[10px] font-bold text-gray-400 hover:text-indigo-500 flex items-center gap-1 transition cursor-pointer"
+                                        >
+                                          {copiedIndex === mIdx ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
+                                          <span>{copiedIndex === mIdx ? 'Copied' : 'Copy answer'}</span>
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+
+                          {aiChatLoading && (
+                            <div className="flex justify-start w-full">
+                              {chatViewMode !== 'clean' ? (
+                                <div className={`w-full rounded-2xl p-4 sm:p-5 border flex items-center gap-3 shadow-xs ${
+                                  chatViewMode === 'chalkboard'
+                                    ? 'notebook-chalkboard-paper text-slate-100 border-slate-700/80'
+                                    : (chatViewMode === 'grid'
+                                        ? 'notebook-grid-paper border-sky-200/70 dark:border-slate-700'
+                                        : 'notebook-ruled-paper border-amber-200/80 dark:border-slate-700')
+                                }`}>
+                                  <div className="flex items-center gap-2 pl-3 sm:pl-5">
+                                    <PenTool size={16} className={`animate-bounce ${
+                                      chatViewMode === 'chalkboard' ? 'text-yellow-300' : 'text-amber-600'
+                                    }`} />
+                                    <span className={`font-handwriting text-base font-bold ${
+                                      chatViewMode === 'chalkboard' ? 'text-yellow-200' : 'text-slate-800 dark:text-amber-200'
+                                    }`}>
+                                      AI Tutor is writing your handwritten notes...
+                                    </span>
+                                    <div className="flex items-center gap-1 ml-1.5">
+                                      <div className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                                      <div className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse [animation-delay:0.2s]" />
+                                      <div className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse [animation-delay:0.4s]" />
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="bg-gray-50 dark:bg-slate-800 rounded-2xl px-4 py-2.5 flex items-center gap-2 border border-gray-100 dark:border-slate-700 shadow-xs">
+                                  <div className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce"></div>
+                                  <div className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce [animation-delay:0.2s]"></div>
+                                  <div className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce [animation-delay:0.4s]"></div>
+                                  <span className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 ml-1">AI Tutor is thinking...</span>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          <div ref={aiChatBottomRef} />
+                        </div>
+                      )}
+
+                      {/* Directly Connected Chat Input Bar with Handwritten Paper Aesthetics */}
+                      <div className={`p-2.5 sm:p-3 border-t shrink-0 transition-colors ${
+                        chatViewMode === 'chalkboard'
+                          ? 'bg-slate-950 border-slate-800'
+                          : (chatViewMode === 'grid'
+                              ? 'bg-[#faf9f5] dark:bg-slate-900 border-sky-200/80 dark:border-slate-800'
+                              : (chatViewMode === 'ruled'
+                                  ? 'bg-[#fdfbf7] dark:bg-slate-900 border-amber-200/80 dark:border-slate-800'
+                                  : 'bg-gray-50/80 dark:bg-slate-800/40 border-gray-100 dark:border-slate-800'))
+                      }`}>
+                        {/* Handwritten Student Note Pad Indicator */}
+                        {chatViewMode !== 'clean' && (
+                          <div className="flex items-center justify-between text-[11px] font-handwriting mb-1.5 px-1 opacity-80">
+                            <span className={`flex items-center gap-1 font-bold ${
+                              chatViewMode === 'chalkboard'
+                                ? 'text-yellow-300'
+                                : (chatViewMode === 'grid' ? 'text-sky-700 dark:text-sky-300' : 'text-amber-800 dark:text-amber-300')
+                            }`}>
+                              <PenTool size={11} />
+                              <span>Student Note Pad • Write your doubt in handwriting:</span>
+                            </span>
+                            <span className="text-[10px] font-sans text-slate-400 hidden sm:inline">
+                              Press Enter ↵ to ask
+                            </span>
+                          </div>
+                        )}
+
+                        <form
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            handleSendAiQuestion();
+                          }}
+                          className="flex items-center gap-2"
+                        >
+                          <div className="relative flex-1 flex items-center">
+                            {/* Input Left Icon */}
+                            <div className="absolute left-3.5 pointer-events-none flex items-center justify-center">
+                              {chatViewMode === 'chalkboard' ? (
+                                <PenTool size={15} className="text-yellow-400/80" />
+                              ) : (chatViewMode === 'grid' ? (
+                                <Grid size={15} className="text-sky-500/80" />
+                              ) : (chatViewMode === 'ruled' ? (
+                                <PenTool size={15} className="text-amber-600/80" />
+                              ) : (
+                                <Bot size={15} className="text-gray-400" />
+                              )))}
+                            </div>
+
+                            <input
+                              type="text"
+                              placeholder={
+                                chatViewMode === 'chalkboard'
+                                  ? 'Write your doubt on the chalkboard...'
+                                  : (chatViewMode === 'grid'
+                                      ? 'Write your doubt on engineering grid paper...'
+                                      : (chatViewMode === 'ruled'
+                                          ? 'Write your doubt on lined notebook paper...'
+                                          : 'Ask any doubt about this lecture...'))
+                              }
+                              value={aiChatInput}
+                              onChange={(e) => setAiChatInput(e.target.value)}
+                              onFocus={() => {
+                                setTimeout(() => scrollToTabs(true), 120);
+                              }}
+                              disabled={aiChatLoading}
+                              className={`flex-1 pl-10 pr-4 py-2.5 sm:py-3 rounded-xl transition shadow-inner focus:outline-none ${
+                                chatViewMode === 'chalkboard'
+                                  ? 'bg-[#0b1329] border-2 border-slate-700 focus:border-yellow-400 focus:ring-2 focus:ring-yellow-400/20 text-yellow-200 placeholder:text-yellow-200/50 font-handwriting text-base sm:text-lg tracking-wide placeholder:font-handwriting'
+                                  : (chatViewMode === 'grid'
+                                      ? 'bg-[#faf9f5] dark:bg-slate-950 border-2 border-sky-300/80 dark:border-sky-800/80 focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20 text-slate-900 dark:text-sky-100 placeholder:text-sky-800/50 dark:placeholder:text-sky-300/40 font-handwriting text-base sm:text-lg tracking-wide placeholder:font-handwriting'
+                                      : (chatViewMode === 'ruled'
+                                          ? 'bg-[#fdfbf7] dark:bg-slate-950 border-2 border-amber-300/80 dark:border-amber-800/80 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 text-slate-900 dark:text-amber-100 placeholder:text-amber-800/50 dark:placeholder:text-amber-300/40 font-handwriting text-base sm:text-lg tracking-wide placeholder:font-handwriting'
+                                          : 'bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-xs sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 font-sans'))
+                              }`}
+                            />
+                          </div>
+
+                          <button
+                            type="submit"
+                            disabled={!aiChatInput.trim() || aiChatLoading}
+                            className={`px-4 sm:px-5 py-2.5 sm:py-3 font-bold rounded-xl shadow-md transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 shrink-0 cursor-pointer active:scale-95 ${
+                              chatViewMode === 'chalkboard'
+                                ? 'bg-yellow-400 hover:bg-yellow-300 text-slate-950 font-handwriting text-base sm:text-lg shadow-yellow-400/20 border border-yellow-300'
+                                : (chatViewMode === 'grid'
+                                    ? 'bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-700 hover:to-indigo-700 text-white font-handwriting text-base sm:text-lg shadow-sky-500/20'
+                                    : (chatViewMode === 'ruled'
+                                        ? 'bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white font-handwriting text-base sm:text-lg shadow-amber-500/20'
+                                        : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white font-sans text-xs sm:text-sm shadow-indigo-500/20'))
+                            }`}
+                          >
+                            <span>{chatViewMode !== 'clean' ? 'Ask Tutor' : 'Ask AI'}</span>
+                            {chatViewMode !== 'clean' ? <PenTool size={14} /> : <Send size={13} />}
+                          </button>
+                        </form>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Quiz Tab */}
+                  {activeTab === 'quiz' && (
+                    <div className="bg-orange-50/50 dark:bg-orange-900/10 p-3 sm:p-6 rounded-2xl sm:rounded-3xl border border-orange-100/90 dark:border-orange-900/40 transition-colors duration-200">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 pb-3 sm:mb-5 sm:pb-4 border-b border-orange-200/80 dark:border-orange-800/80">
+                        <div className="flex items-center gap-2.5 sm:gap-3">
+                          <div className="p-2 bg-orange-100 dark:bg-orange-900/50 rounded-xl shrink-0">
+                            <CheckCircle className="text-orange-600 dark:text-orange-400" size={20} />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="text-base sm:text-xl font-extrabold text-orange-950 dark:text-orange-100 m-0 leading-tight">Video Quiz & Flashcards</h3>
+                              {quizHistory.some(h => h.passed) && (
+                                <span className="bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400 text-[10px] uppercase font-black px-2 py-0.5 rounded-md flex items-center gap-1">
+                                  <CheckCircle size={10} /> Passed
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] sm:text-xs text-orange-600/80 dark:text-orange-400/80 m-0 mt-0.5">Practice with timed tests or study concepts with flashcards.</p>
+                          </div>
+                        </div>
+
+                        {/* Segmented Mode Switcher: Practice Quiz vs Flashcards */}
+                        <div className="inline-flex items-center bg-orange-100/80 dark:bg-slate-800/90 p-1 rounded-2xl border border-orange-200/80 dark:border-slate-700 shadow-2xs overflow-hidden w-full sm:w-auto gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setQuizSubTab('quiz')}
+                            className={`flex-1 sm:flex-none flex items-center justify-center gap-2 py-2 px-3.5 sm:px-4 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+                              quizSubTab === 'quiz'
+                                ? 'bg-white dark:bg-slate-700 text-orange-600 dark:text-orange-400 shadow-xs'
+                                : 'text-gray-600 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white'
+                            }`}
+                          >
+                            <CheckCircle size={15} />
+                            <span>Practice Quiz</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setQuizSubTab('flashcards')}
+                            className={`flex-1 sm:flex-none flex items-center justify-center gap-2 py-2 px-3.5 sm:px-4 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+                              quizSubTab === 'flashcards'
+                                ? 'bg-white dark:bg-slate-700 text-orange-600 dark:text-orange-400 shadow-xs'
+                                : 'text-gray-600 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white'
+                            }`}
+                          >
+                            <Layers size={15} />
+                            <span>Flashcards</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {quizSubTab === 'flashcards' ? (
+                        <AnimatePresence mode="wait">
+                          {flashcardsStarted ? (
+                            <motion.div
+                              key="flashcards-deck"
+                              initial={{ opacity: 0, scale: 0.97 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              exit={{ opacity: 0, scale: 0.97 }}
+                              transition={{ duration: 0.22, ease: "easeOut" }}
+                              className="w-full"
+                            >
+                              <FlashcardsView
+                                questions={flashcardQuestions}
+                                loading={loadingFlashcards}
+                                onExit={() => setFlashcardsStarted(false)}
+                                onStartQuiz={() => {
+                                  setQuizSubTab('quiz');
+                                  if (!quizData) {
+                                    handleStartQuiz();
+                                  }
+                                }}
+                                onRefresh={() => fetchFlashcards(true, false)}
+                              />
+                            </motion.div>
+                          ) : (
+                            <motion.div
+                              key="flashcards-start"
+                              initial={{ opacity: 0, y: 10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              exit={{ opacity: 0, y: -10 }}
+                              transition={{ duration: 0.2, ease: "easeOut" }}
+                              className="flex flex-col items-center justify-center py-5 sm:py-9 text-center w-full"
+                            >
+                              <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-2xl bg-orange-100 dark:bg-orange-950/40 text-orange-500 flex items-center justify-center mb-3 shadow-xs">
+                                <Layers className="h-7 w-7 sm:h-9 sm:w-9 text-orange-500" />
+                              </div>
+                              <h4 className="text-base sm:text-xl font-bold text-gray-800 dark:text-gray-200 mb-1.5">Ready to study flashcards?</h4>
+                              <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-400 max-w-md mb-5 leading-relaxed">
+                                Review key concepts, definitions, and questions at your own pace before taking the timed quiz!
+                              </p>
+                              <div className="flex flex-col sm:flex-row items-center gap-3">
+                                <button
+                                  onClick={handleStartFlashcards}
+                                  disabled={loadingFlashcards}
+                                  className="w-full sm:w-auto bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white px-7 py-3 rounded-xl font-bold text-xs sm:text-sm transition-all shadow-md shadow-orange-500/20 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 active:scale-95"
+                                >
+                                  {loadingFlashcards ? (
+                                    <>
+                                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                                      <span>Loading Flashcards...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <span>Start Flashcards</span>
+                                      <ChevronRight size={14} />
+                                    </>
+                                  )}
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => setQuizSubTab('quiz')}
+                                  className="w-full sm:w-auto px-5 py-3 rounded-xl font-bold text-xs sm:text-sm bg-orange-100 hover:bg-orange-200 dark:bg-orange-950/40 dark:hover:bg-orange-900/60 text-orange-700 dark:text-orange-300 transition-all flex items-center justify-center gap-2 cursor-pointer shadow-2xs active:scale-95"
+                                >
+                                  <CheckCircle size={14} />
+                                  <span>Switch to Practice Quiz</span>
+                                </button>
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      ) : (
+                        <>
+                          {selectedHistoryQuiz ? (() => {
+                        let questions = [];
+                        try {
+                          if (typeof selectedHistoryQuiz.questions === 'string') {
+                            questions = JSON.parse(selectedHistoryQuiz.questions);
+                          } else if (Array.isArray(selectedHistoryQuiz.questions)) {
+                            questions = selectedHistoryQuiz.questions;
+                          }
+                        } catch (e) {
+                          console.warn("Could not parse quiz questions:", e);
+                          questions = [];
+                        }
+                        if (!Array.isArray(questions)) questions = [];
+
+                        let userAnswers = [];
+                        try {
+                          if (typeof selectedHistoryQuiz.user_answers === 'string') {
+                            userAnswers = JSON.parse(selectedHistoryQuiz.user_answers);
+                          } else if (Array.isArray(selectedHistoryQuiz.user_answers)) {
+                            userAnswers = selectedHistoryQuiz.user_answers;
+                          }
+                        } catch (e) {
+                          console.warn("Could not parse user answers:", e);
+                          userAnswers = [];
+                        }
+                        if (!Array.isArray(userAnswers)) userAnswers = [];
+
+                        return (
+                          <motion.div
+                            initial={{ opacity: 0, scale: 0.98 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            className="bg-white dark:bg-slate-800 p-3.5 sm:p-7 rounded-2xl sm:rounded-3xl shadow-sm border border-orange-100/80 dark:border-slate-700 relative"
+                          >
+                            <div className="flex items-center justify-between gap-3 mb-4 sm:mb-5 pb-3 border-b border-gray-100 dark:border-slate-700">
+                              <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
+                                <button
+                                  onClick={() => setSelectedHistoryQuiz(null)}
+                                  className="p-1.5 sm:p-2 bg-gray-100 hover:bg-gray-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-gray-700 dark:text-gray-200 rounded-xl transition-colors flex items-center justify-center cursor-pointer shadow-xs active:scale-95 shrink-0"
+                                  title="Back to Quiz Menu"
+                                  aria-label="Back to Quiz Menu"
+                                >
+                                  <ArrowLeft size={16} />
+                                </button>
+                                <div className="min-w-0">
+                                  <h2 className="text-sm sm:text-lg font-bold text-gray-900 dark:text-white m-0 leading-tight truncate">Detailed Review</h2>
+                                  <p className="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400 m-0 mt-0.5">
+                                    Attempted: {selectedHistoryQuiz.attempted_at ? new Date(selectedHistoryQuiz.attempted_at).toLocaleDateString() : "Recent"}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                                <span className={`px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-full text-[9px] sm:text-[10px] font-black uppercase tracking-wider ${selectedHistoryQuiz.passed ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'}`}>
+                                  {selectedHistoryQuiz.passed ? "Passed" : "Failed"} • {selectedHistoryQuiz.score ?? 0}%
+                                </span>
+                                <button
+                                  onClick={() => handleDeleteQuizHistory(selectedHistoryQuiz.id)}
+                                  className="p-1.5 sm:p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 dark:hover:text-red-400 rounded-xl transition-colors flex items-center justify-center cursor-pointer border border-gray-100 dark:border-slate-700 shadow-xs active:scale-95 shrink-0"
+                                  title="Delete this quiz attempt"
+                                  aria-label="Delete Attempt"
+                                >
+                                  <Trash2 size={15} />
+                                </button>
+                              </div>
+                            </div>
+
+                            {loadingHistoryDetails ? (
+                              <div className="py-12 flex flex-col items-center justify-center text-center">
+                                <div className="w-8 h-8 border-2 border-orange-500 border-t-transparent rounded-full animate-spin mb-3"></div>
+                                <p className="text-xs text-gray-500 dark:text-gray-400">Loading attempt details...</p>
+                              </div>
+                            ) : questions.length === 0 ? (
+                              <div className="py-10 text-center">
+                                <p className="text-xs text-gray-500 dark:text-gray-400">Review questions data is loading or unavailable for this attempt.</p>
+                              </div>
+                            ) : (
+                              <div className="space-y-6 sm:space-y-8">
+                              {(questions || []).map((q, idx) => {
+                                const userAnswer = userAnswers[idx];
+                                const isCorrect = userAnswer === q.answer;
+
+                                return (
+                                  <div key={idx} className="pb-6 sm:pb-8 border-b border-gray-100 dark:border-slate-700/80 last:border-0 last:pb-0">
+                                    <div className="flex items-start gap-2 sm:gap-2.5 mb-3 sm:mb-4">
+                                      <span className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-orange-100 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 font-black text-xs sm:text-sm flex items-center justify-center shrink-0 mt-0.5">
+                                        {idx + 1}
+                                      </span>
+                                      <div className="font-bold text-sm sm:text-base text-gray-900 dark:text-slate-100 leading-snug sm:leading-relaxed m-0 flex-1 min-w-0">
+                                        <QuizMathText text={q.question} />
+                                      </div>
+                                    </div>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
+                                      {(q.options || []).map((opt, optIdx) => {
+                                        const isSelected = opt === userAnswer;
+                                        const isActualAnswer = opt === q.answer;
+
+                                        let bgClass = "bg-gray-50 dark:bg-slate-700/60 border-gray-200/80 dark:border-slate-600";
+                                        if (isSelected && isCorrect) bgClass = "bg-green-50 dark:bg-green-900/20 border-green-500 text-green-800 dark:text-green-300 ring-1 ring-green-500";
+                                        else if (isSelected && !isCorrect) bgClass = "bg-red-50 dark:bg-red-900/20 border-red-500 text-red-800 dark:text-red-300 ring-1 ring-red-500";
+                                        else if (isActualAnswer) bgClass = "bg-green-50/50 dark:bg-green-900/10 border-green-300 text-green-700 dark:text-green-400 border-dashed";
+
+                                        return (
+                                          <div key={optIdx} className={`p-3 sm:p-3.5 rounded-xl border-2 transition-all flex flex-col justify-center ${bgClass}`}>
+                                            <div className="text-xs sm:text-sm font-medium leading-snug">
+                                              <QuizMathText text={opt} />
+                                            </div>
+                                            <div className="mt-1.5 flex items-center gap-1.5 opacity-90">
+                                              {isSelected && isCorrect && <span className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-1"><CheckCircle size={11} /> Your Correct Answer</span>}
+                                              {isSelected && !isCorrect && <span className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-1"><X size={11} /> Your Incorrect Answer</span>}
+                                              {!isSelected && isActualAnswer && <span className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-1"><CheckCircle size={11} /> Correct Answer</span>}
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            )}
+                          </motion.div>
+                        );
+                      })()
+                        : quizResult ? (
+                          <motion.div
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            className="bg-white dark:bg-slate-800 p-5 sm:p-8 rounded-2xl sm:rounded-3xl shadow-lg max-w-md mx-auto text-center border border-orange-100 dark:border-slate-700"
+                          >
+                            <div className={`w-14 h-14 sm:w-16 sm:h-16 mx-auto rounded-2xl flex items-center justify-center mb-4 ${quizResult.passed ? 'bg-green-100 dark:bg-green-900/30 text-green-600' : 'bg-red-100 dark:bg-red-900/30 text-red-600'}`}>
+                              <span className="text-2xl">{quizResult.passed ? "🎉" : "💪"}</span>
+                            </div>
+                            <h2 className="text-lg sm:text-xl font-bold mb-1.5 dark:text-white mt-0">{quizResult.passed ? "Congratulations!" : "Good Try!"}</h2>
+                            <p className="text-xs sm:text-sm mb-4 text-gray-500 dark:text-slate-300">
+                              Your Score: <strong className={`font-black ${quizResult.passed ? 'text-green-600 dark:text-green-400' : 'text-orange-600 dark:text-orange-400'}`}>{quizResult.score}%</strong>
+                            </p>
+                            <div className="flex flex-row gap-2.5">
+                              <button
+                                onClick={() => {
+                                  setQuizResult(null);
+                                  fetchQuizHistory();
+                                }}
+                                className="flex-1 px-3 sm:px-4 py-2.5 bg-gray-100 dark:bg-slate-700 text-gray-800 dark:text-white font-bold text-xs sm:text-sm rounded-xl hover:bg-gray-200 dark:hover:bg-slate-600 transition cursor-pointer active:scale-95 text-center"
+                              >
+                                Close Results
+                              </button>
+                              <button
+                                onClick={() => handleSelectHistoryQuiz(quizResult.quiz)}
+                                className="flex-1 px-3 sm:px-4 py-2.5 bg-gradient-to-r from-orange-500 to-amber-500 text-white font-bold text-xs sm:text-sm rounded-xl hover:from-orange-600 hover:to-amber-600 transition shadow-sm cursor-pointer active:scale-95 text-center"
+                              >
+                                Review Answers
+                              </button>
+                            </div>
+                          </motion.div>
+                        ) : quizData ? (
+                          <motion.div
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="bg-white dark:bg-slate-800/95 rounded-2xl sm:rounded-3xl shadow-sm border border-orange-100/90 dark:border-slate-700/80 p-3.5 sm:p-6 sm:p-7 relative overflow-hidden"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2.5 mb-5 pb-3 sm:mb-6 sm:pb-4 border-b border-gray-100 dark:border-slate-700/80">
+                              <div className="flex items-center gap-2">
+                                <h2 className="text-base sm:text-xl font-extrabold text-gray-900 dark:text-white m-0 tracking-tight">Quiz</h2>
+                                <span className="text-[10px] sm:text-xs font-bold px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-300">
+                                  {Object.keys(answers).length} of {quizData?.questions?.length || 0} Answered
+                                </span>
+                              </div>
+
+                              <div className={`flex items-center gap-1.5 px-3 py-1 sm:py-1.5 rounded-xl border text-xs sm:text-sm font-mono font-bold transition-all shadow-2xs ${
+                                timeLeft < 60
+                                  ? 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900/50 text-red-600 dark:text-red-400 animate-pulse'
+                                  : 'bg-orange-50/80 dark:bg-slate-700/50 border-orange-200/70 dark:border-slate-600 text-orange-600 dark:text-orange-400'
+                              }`}>
+                                <Clock size={14} className={timeLeft < 60 ? 'animate-spin' : ''} />
+                                <span>Time Left: {Math.floor(timeLeft / 60)}:{String(timeLeft % 60).padStart(2, '0')}</span>
+                              </div>
+                            </div>
+
+                            <div className="space-y-6 sm:space-y-8">
+                              {quizData?.questions?.map && quizData.questions.map((q, idx) => (
+                                <div key={idx} className="pb-5 sm:pb-6 border-b border-gray-100 dark:border-slate-700/80 last:border-0 last:pb-0">
+                                  <div className="flex items-start gap-2 sm:gap-2.5 mb-3 sm:mb-3.5">
+                                    <span className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-orange-100 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 font-black text-xs sm:text-sm flex items-center justify-center shrink-0 mt-0.5 shadow-2xs">
+                                      {idx + 1}
+                                    </span>
+                                    <div className="font-bold text-sm sm:text-base text-gray-900 dark:text-slate-100 leading-snug sm:leading-relaxed m-0 flex-1 min-w-0">
+                                      <QuizMathText text={q.question} />
+                                    </div>
+                                  </div>
+
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
+                                    {(q.options || []).map((opt, optIdx) => {
+                                      const isSelected = answers[idx] === opt;
+                                      return (
+                                        <label
+                                          key={optIdx}
+                                          className={`group flex items-start gap-2.5 p-2.5 sm:p-3 rounded-xl sm:rounded-2xl border transition-all duration-200 cursor-pointer select-none active:scale-[0.99] ${
+                                            isSelected
+                                              ? 'border-orange-500 bg-orange-50/90 dark:bg-orange-950/20 text-orange-950 dark:text-orange-200 shadow-xs ring-1 ring-orange-400/40'
+                                              : 'border-gray-200/80 dark:border-slate-700/80 bg-white dark:bg-slate-800/80 hover:border-orange-200 dark:hover:border-slate-600 hover:bg-orange-50/30 text-gray-800 dark:text-slate-200'
+                                          }`}
+                                        >
+                                          <div className={`w-4 h-4 sm:w-4.5 sm:h-4.5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 transition-all ${
+                                            isSelected
+                                              ? 'border-orange-500 bg-orange-500 text-white'
+                                              : 'border-gray-300 dark:border-slate-500 bg-white dark:bg-slate-700 group-hover:border-orange-300'
+                                          }`}>
+                                            {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                                          </div>
+
+                                          <input
+                                            type="radio"
+                                            name={`question-${idx}`}
+                                            value={opt}
+                                            checked={isSelected}
+                                            onChange={() => handleQuizAnswer(idx, opt)}
+                                            className="sr-only"
+                                          />
+                                          <div className="text-xs sm:text-sm font-medium leading-snug flex-1 min-w-0">
+                                            <QuizMathText text={opt} />
+                                          </div>
+                                        </label>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+
+                            <div className="mt-6 sm:mt-8 pt-4 border-t border-gray-100 dark:border-slate-700/80 flex flex-row items-center justify-between gap-2.5 sm:gap-3">
+                              <button
+                                disabled={submittingQuiz}
+                                onClick={() => {
+                                  setQuizData(null);
+                                  toast("Quiz cancelled.");
+                                }}
+                                className="flex-1 sm:flex-none px-3.5 sm:px-5 py-2.5 bg-gray-100 hover:bg-gray-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-gray-700 dark:text-gray-200 font-bold text-xs sm:text-sm rounded-xl transition cursor-pointer text-center active:scale-95"
+                              >
+                                Cancel Quiz
+                              </button>
+                              <button
+                                disabled={submittingQuiz}
+                                onClick={handleSubmitQuiz}
+                                className="flex-1 sm:flex-none px-4 sm:px-6 py-2.5 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-bold text-xs sm:text-sm rounded-xl shadow-md shadow-orange-500/20 disabled:opacity-50 active:scale-95 transition cursor-pointer flex items-center justify-center gap-1.5 sm:gap-2 text-center"
+                              >
+                                {submittingQuiz ? (
+                                  <>
+                                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                                    <span>Submitting...</span>
+                                  </>
+                                ) : (
+                                  <span>Submit Answers</span>
+                                )}
+                              </button>
+                            </div>
+                          </motion.div>
+                        ) : (
+                          <div className="flex flex-col items-center justify-center py-5 sm:py-9 text-center w-full">
+                            <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-2xl bg-orange-100 dark:bg-orange-950/40 text-orange-500 flex items-center justify-center mb-3 shadow-xs">
+                              <CheckCircle className="h-7 w-7 sm:h-9 sm:w-9 text-orange-500" />
+                            </div>
+                            <h4 className="text-base sm:text-xl font-bold text-gray-800 dark:text-gray-200 mb-1.5">Ready to test your knowledge?</h4>
+                            <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-400 max-w-md mb-5 leading-relaxed">
+                              Take a 10-question quiz generated by AI specifically for this video to earn XP!
+                            </p>
+                            <div className="flex flex-col sm:flex-row items-center gap-3">
+                              <button
+                                onClick={handleStartQuiz}
+                                disabled={loadingQuiz}
+                                className="w-full sm:w-auto bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white px-7 py-3 rounded-xl font-bold text-xs sm:text-sm transition-all shadow-md shadow-orange-500/20 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 active:scale-95"
+                              >
+                                {loadingQuiz ? (
+                                  <>
+                                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                                    <span>Generating Quiz...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <span>Start Timed Quiz</span>
+                                    <ChevronRight size={14} />
+                                  </>
+                                )}
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => setQuizSubTab('flashcards')}
+                                className="w-full sm:w-auto px-5 py-3 rounded-xl font-bold text-xs sm:text-sm bg-orange-100 hover:bg-orange-200 dark:bg-orange-950/40 dark:hover:bg-orange-900/60 text-orange-700 dark:text-orange-300 transition-all flex items-center justify-center gap-2 cursor-pointer shadow-2xs active:scale-95"
+                              >
+                                <Layers size={15} />
+                                <span>Study with Flashcards</span>
+                              </button>
+                            </div>
+
+                            {quizHistory.length > 0 && (
+                              <div className="mt-10 sm:mt-14 w-full max-w-2xl mx-auto text-left">
+                                <h3 className="text-sm sm:text-base font-bold text-gray-800 dark:text-gray-200 mb-3 flex items-center gap-2 border-b border-orange-200/60 dark:border-gray-700 pb-2.5">
+                                  <Clock size={16} className="text-orange-500" /> Previous Attempts
+                                </h3>
+                                <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1 custom-scrollbar">
+                                  {(quizHistory || []).map(hist => (
+                                    <div
+                                      key={hist.id}
+                                      onClick={() => handleSelectHistoryQuiz(hist)}
+                                      className="flex justify-between items-center p-3 sm:p-4 bg-white dark:bg-slate-800 shadow-xs rounded-xl border border-gray-200/80 dark:border-slate-700 cursor-pointer hover:border-orange-300 dark:hover:border-orange-500/50 hover:shadow-sm transition-all group"
+                                    >
+                                      <div>
+                                        <p className="font-semibold text-gray-800 dark:text-slate-200 m-0 group-hover:text-orange-600 dark:group-hover:text-orange-400 transition-colors text-xs sm:text-sm">
+                                          Attempt on {new Date(hist.attempted_at).toLocaleDateString()}
+                                        </p>
+                                      </div>
+                                      <div className="flex items-center gap-2 sm:gap-2.5">
+                                        <span className={`inline-block px-2 sm:px-2.5 py-0.5 text-[11px] sm:text-xs font-bold rounded-lg ${hist.passed ? 'bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400'}`}>
+                                          {hist.score}%
+                                        </span>
+                                        <button
+                                          onClick={(e) => {
+                                             e.stopPropagation();
+                                             handleDeleteQuizHistory(hist.id);
+                                          }}
+                                          className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
+                                          title="Delete attempt"
+                                          aria-label="Delete attempt"
+                                        >
+                                          <Trash2 size={14} />
+                                        </button>
+                                        <ArrowLeft size={14} className="text-gray-400 rotate-180 group-hover:text-orange-500 transition-colors" />
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Notes Tab */}
+                  {activeTab === 'notes' && (
+                    <div className="space-y-4">
+                      <div className="bg-orange-50/50 dark:bg-orange-900/10 p-4 rounded-xl border border-orange-100 dark:border-orange-500/20 flex items-start gap-3">
+                        <FileText className="text-orange-500 dark:text-orange-400 mt-0.5" size={20} />
+                        <div>
+                          <h4 className="font-semibold text-orange-800 dark:text-orange-300">Private Notes</h4>
+                          <p className="text-sm text-orange-600/80 dark:text-orange-400/80">These notes are visible only to you. Take down important concepts here.</p>
+                        </div>
+                      </div>
+                      <div className="bg-white dark:bg-gray-800 rounded-xl mb-12 quill-container relative z-10 pb-12">
+                        <ReactQuill
+                          theme="snow"
+                          value={noteContent}
+                          onChange={setNoteContent}
+                          placeholder="Type your notes here... (Auto-saves on save button click)"
+                          className="h-64 text-gray-800 dark:text-gray-200"
+                        />
+                      </div>
+
+                      {/* Handwritten Notes Uploader */}
+                      <div className="bg-white dark:bg-gray-800 p-4 rounded-xl border border-gray-200 dark:border-gray-700">
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="flex items-center gap-2">
+                            <ImageIcon className="text-gray-500 dark:text-gray-400" size={20} />
+                            <h4 className="font-semibold text-gray-800 dark:text-gray-200">Handwritten Notes</h4>
+                          </div>
+                          <label className="cursor-pointer bg-white text-gray-700 dark:bg-gray-700 dark:text-gray-200 px-4 py-2 rounded-lg text-sm font-medium border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors">
+                            <input
+                              type="file"
+                              className="hidden"
+                              multiple
+                              accept="image/*,.pdf"
+                              onChange={(e) => {
+                                if (e.target.files && e.target.files.length > 0) {
+                                  const filesArray = Array.from(e.target.files);
+                                  const validFiles = [];
+
+                                  filesArray.forEach(file => {
+                                    if (file.size > 2 * 1024 * 1024) {
+                                      toast.error(`"${file.name}" exceeds the 2MB limit.`);
+                                    } else {
+                                      validFiles.push(file);
+                                    }
+                                  });
+
+                                  if (validFiles.length > 0) {
+                                    setNewNoteFiles([...newNoteFiles, ...validFiles]);
+                                  }
+
+                                  // Reset input so the same file can be re-selected if necessary
+                                  e.target.value = null;
+                                }
+                              }}
+                            />
+                            Upload Files
+                          </label>
+                        </div>
+
+                        {/* File Previews */}
+                        <div className="space-y-3 mb-4">
+                          {/* Render Server Files */}
+                          {noteFiles.map((file) => (
+                            <div key={file.id} className="flex items-center justify-between bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg p-3 w-full">
+                              <div className="flex items-center gap-3 overflow-hidden">
+                                <FileText className="text-orange-500 shrink-0" size={24} />
+                                <div className="flex flex-col truncate">
+                                  <span className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">
+                                    {file.name}
+                                  </span>
+                                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                                    {(file.name.toLowerCase().endsWith(".pdf")) ? "PDF Document" : "Image File"}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2 shrink-0">
+                                <button
+                                  onClick={() => setPreviewFile({ url: file.url, name: file.name })}
+                                  className="px-3 py-1.5 bg-orange-100 hover:bg-orange-200 text-orange-700 dark:bg-orange-900/30 dark:hover:bg-orange-900/50 dark:text-orange-400 text-sm font-medium rounded-md transition-colors flex items-center gap-1"
+                                >
+                                  View Full Size
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setDeletedFileIds([...deletedFileIds, file.id]);
+                                    setNoteFiles(noteFiles.filter(f => f.id !== file.id));
+                                  }}
+                                  className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-md transition-colors"
+                                  title="Remove Saved File"
+                                >
+                                  <X size={18} />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+
+                          {/* Render Unsaved New Files */}
+                          {newNoteFiles.map((file, idx) => (
+                            <div key={`new-${idx}`} className="flex items-center justify-between bg-white dark:bg-gray-800 border border-blue-200 dark:border-blue-900 rounded-lg p-3 w-full shadow-sm">
+                              <div className="flex items-center gap-3 overflow-hidden">
+                                <FileText className="text-blue-500 shrink-0" size={24} />
+                                <div className="flex flex-col truncate">
+                                  <span className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">
+                                    {file.name}
+                                  </span>
+                                  <span className="text-xs text-blue-500 dark:text-blue-400">
+                                    Unsaved {(file.type === "application/pdf") ? "PDF Document" : "Image File"}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2 shrink-0">
+                                <button
+                                  onClick={() => setPreviewFile({ url: URL.createObjectURL(file), name: file.name })}
+                                  className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:hover:bg-blue-900/50 dark:text-blue-400 text-sm font-medium rounded-md transition-colors flex items-center gap-1"
+                                >
+                                  View Preview
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    const newArr = [...newNoteFiles];
+                                    newArr.splice(idx, 1);
+                                    setNewNoteFiles(newArr);
+                                  }}
+                                  className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-md transition-colors"
+                                  title="Remove Pending File"
+                                >
+                                  <X size={18} />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="flex justify-end pt-2">
+                        <button
+                          onClick={handleSaveNote}
+                          disabled={savingNote}
+                          className="bg-gray-900 dark:bg-orange-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-gray-800 dark:hover:bg-orange-700 transition-colors disabled:opacity-50 flex items-center gap-2 shadow-sm"
+                        >
+                          {savingNote ? <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full"></div> : "Save Notes"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Discussion Tab */}
+                  {activeTab === 'discussion' && (
+                    <div className="flex flex-col h-[500px] bg-gray-50 dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+                      {/* Chat Messages */}
+                      <div className="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth">
+                        {comments.length === 0 ? (
+                          <div className="h-full flex flex-col items-center justify-center text-gray-400">
+                            <MessageSquare size={48} className="mb-2 opacity-20" />
+                            <p>No messages yet. Start the discussion!</p>
+                          </div>
+                        ) : (
+                          <div className="space-y-4">
+                            {(() => {
+                              const renderComment = (comment, isReply = false) => (
+                                <div key={comment.id} className={`flex flex-col ${isReply ? 'ml-11 mt-3' : ''}`}>
+                                  <div className="flex gap-3 animate-fade-in group">
+                                    {comment.user_picture ? (
+                                      <img src={comment.user_picture} alt="User" className="w-8 h-8 rounded-full shadow-sm shrink-0" />
+                                    ) : (
+                                      <div className="w-8 h-8 rounded-full bg-orange-100 flex items-center justify-center text-orange-600 font-bold text-xs shadow-sm shrink-0">
+                                        {comment.user_name?.charAt(0) || 'U'}
+                                      </div>
+                                    )}
+                                    <div className="flex flex-col max-w-[85%]">
+                                      <div className="flex items-baseline gap-2 mb-0.5">
+                                        <span className="font-bold text-gray-800 dark:text-gray-200 text-sm">{comment.user_name || 'Anonymous'}</span>
+                                        <span className="text-[11px] text-gray-400 dark:text-gray-500">
+                                          {new Date(comment.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                                        </span>
+                                      </div>
+                                      <div className="bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 px-4 py-2.5 rounded-2xl rounded-tl-none shadow-sm text-gray-700 dark:text-gray-300 text-sm whitespace-pre-wrap relative">
+                                        {comment.content}
+
+                                        {/* Actions */}
+                                        <div className="absolute -right-12 top-0 flex flex-col gap-1 opacity-100 xl:opacity-0 xl:group-hover:opacity-100 transition-opacity">
+                                          <button
+                                            onClick={() => setReplyTo(comment.id)}
+                                            className="p-1.5 text-gray-400 hover:text-orange-500 hover:bg-orange-50 rounded-md transition-colors"
+                                            title="Reply"
+                                          >
+                                            <Reply size={14} />
+                                          </button>
+                                          {user?.uid === comment.user_uid && (
+                                            <button
+                                              onClick={() => handleDeleteComment(comment.id)}
+                                              className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
+                                              title="Delete"
+                                            >
+                                              <Trash2 size={14} />
+                                            </button>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                  {/* Render Replies */}
+                                  {comment.replies && (comment.replies || []).map(reply => renderComment(reply, true))}
+                                </div>
+                              );
+                              return (comments || []).map(c => renderComment(c));
+                            })()}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Chat Input */}
+                      <div className="p-3 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700">
+                        {replyTo && (
+                          <div className="mb-2 px-3 py-1.5 bg-orange-50 border border-orange-100 rounded-lg flex items-center justify-between animate-fade-in">
+                            <span className="text-xs text-orange-700 flex items-center gap-1">
+                              <Reply size={12} /> Replying to <strong>{comments.find(c => c.id === replyTo)?.user_name || 'message'}</strong>
+                            </span>
+                            <button onClick={() => setReplyTo(null)} className="text-orange-400 hover:text-orange-600 transition-colors">
+                              <X size={14} />
+                            </button>
+                          </div>
+                        )}
+                        <form onSubmit={(e) => { e.preventDefault(); handlePostComment(); }} className="flex items-center gap-2 relative">
+                          <input
+                            type="text"
+                            value={newComment}
+                            onChange={(e) => setNewComment(e.target.value)}
+                            placeholder={replyTo ? "Write a reply..." : "Message the community..."}
+                            className="flex-1 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400 border border-gray-200 dark:border-gray-600 rounded-full py-3 px-5 pr-12 focus:ring-2 focus:ring-orange-500 focus:border-transparent outline-none transition-all text-sm"
+                            autoFocus={!!replyTo}
+                          />
+                          <button
+                            type="submit"
+                            disabled={postingComment || !newComment.trim()}
+                            className="absolute right-2 top-1.5 bottom-1.5 w-9 bg-orange-500 hover:bg-orange-600 text-white rounded-full flex items-center justify-center transition-colors disabled:opacity-50 disabled:bg-gray-300"
+                          >
+                            {postingComment ? (
+                              <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full"></div>
+                            ) : (
+                              <Send size={16} className="-ml-0.5" />
+                            )}
+                          </button>
+                        </form>
+                      </div>
+                    </div>
+                  )}
+                    </motion.div>
+                  </AnimatePresence>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      {/* Premium Playlist Sidebar */}
+      {playlist && (
+        <div className="hidden lg:flex w-full lg:w-80 bg-white dark:bg-slate-900 border-t lg:border-t-0 lg:border-l border-gray-100 dark:border-slate-800 lg:h-screen lg:overflow-hidden flex-col">
+          {/* Sidebar Header */}
+          <div className="px-4 py-4 border-b border-gray-100 dark:border-slate-800 bg-white dark:bg-slate-900 sticky top-0 z-10">
+            <div className="flex items-center gap-3 mb-2">
+              <div className="p-1.5 bg-orange-500 text-white rounded-lg">
+                <PlayCircle size={16} />
+              </div>
+              <span className="text-[10px] font-black uppercase tracking-widest text-orange-500">Playlist</span>
+            </div>
+            <h2 className="text-sm font-black text-gray-800 dark:text-white line-clamp-2 leading-snug">{playlist.name}</h2>
+            <p className="text-[10px] text-gray-400 dark:text-slate-500 font-bold uppercase tracking-widest mt-1">
+              {(playlist.videos || []).length} lessons
+            </p>
+          </div>
+
+          {/* Video List */}
+          {(() => {
+            const allVideos = playlist.videos || [];
+            const totalPages = Math.ceil(allVideos.length / ITEMS_PER_PAGE);
+            const paginatedVideos = allVideos.slice((playlistPage - 1) * ITEMS_PER_PAGE, playlistPage * ITEMS_PER_PAGE);
+
+            return (
+              <>
+                <div className="flex-1 overflow-y-auto divide-y divide-gray-50 dark:divide-slate-800">
+                  {paginatedVideos.map((v, index) => {
+                    const absoluteIndex = (playlistPage - 1) * ITEMS_PER_PAGE + index;
+                    const isActive = v.vid === videoId;
+                    const progress = Math.round(isActive ? liveProgress : (v.watch_progress || 0));
+                    return (
+                      <div
+                        key={v.vid}
+                        ref={isActive ? activeVideoRef : null}
+                        onClick={() => handleSelectVideo(v.vid)}
+                        className={`group flex gap-3 p-3 cursor-pointer transition-all duration-200 ${isActive
+                          ? 'bg-orange-50 dark:bg-orange-900/10 border-r-2 border-orange-500'
+                          : 'hover:bg-gray-50 dark:hover:bg-slate-800/60'
+                          }`}
+                      >
+                        {/* Thumbnail */}
+                        <div className="relative flex-shrink-0">
+                          <img
+                            src={`https://img.youtube.com/vi/${v.vid}/default.jpg`}
+                            alt={v.name}
+                            className={`w-20 h-12 object-cover rounded-xl shadow-sm transition-all ${isActive ? 'ring-2 ring-orange-400' : ''}`}
+                          />
+                          {isActive && (
+                            <div className="absolute inset-0 bg-orange-500/30 rounded-xl flex items-center justify-center">
+                              <div className="w-5 h-5 bg-orange-500 rounded-full flex items-center justify-center">
+                                <Play size={10} className="text-white fill-white ml-0.5" />
+                              </div>
+                            </div>
+                          )}
+                          {(v.is_completed || (v.watch_progress || 0) >= 90) && !isActive && (
+                            <div className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-emerald-500 text-white rounded-full flex items-center justify-center shadow-md border-2 border-white dark:border-slate-800 z-10" title="Completed">
+                              <Check size={11} strokeWidth={3.5} />
+                            </div>
+                          )}
+                          <div className="absolute -bottom-1.5 -left-1.5 w-5 h-5 bg-gray-800 dark:bg-slate-700 text-white rounded-full flex items-center justify-center text-[9px] font-black shadow-sm">
+                            {absoluteIndex + 1}
+                          </div>
+                        </div>
+
+                        {/* Info */}
+                        <div className="flex-1 min-w-0">
+                          <h3 className={`text-xs font-bold line-clamp-2 mb-1.5 leading-snug transition-colors ${isActive ? 'text-orange-600 dark:text-orange-400' : 'text-gray-700 dark:text-slate-300 group-hover:text-orange-500'
+                            }`}>
+                            {v.name}
+                          </h3>
+                          {/* Progress bar */}
+                          <div className="h-1 w-full bg-gray-100 dark:bg-slate-700 rounded-full overflow-hidden">
+                            <div
+                              style={{ width: `${progress}%` }}
+                              className={`h-1 rounded-full transition-all duration-500 ${v.is_completed ? 'bg-green-500' : 'bg-gradient-to-r from-orange-500 to-amber-400'
+                                }`}
+                            ></div>
+                          </div>
+                          <div className="flex items-center justify-between text-[9px] font-black text-gray-400 dark:text-slate-500 uppercase tracking-widest mt-1">
+                            <span>{progress}% watched</span>
+                            {v.duration_seconds > 0 && (
+                              <span className="flex items-center gap-0.5 text-gray-500 dark:text-slate-400">
+                                <Clock size={10} />
+                                {formatVideoDuration(v.duration_seconds)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Desktop Pagination Footer */}
+                {totalPages > 1 && (
+                  <div className="px-4 py-3 border-t border-gray-100 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center justify-between shrink-0">
+                    <button
+                      disabled={playlistPage === 1}
+                      onClick={() => setPlaylistPage(p => p - 1)}
+                      className="p-1.5 text-gray-400 dark:text-slate-500 hover:text-orange-500 hover:bg-orange-50 dark:hover:bg-orange-900/40 rounded-lg transition-all disabled:opacity-20 disabled:cursor-not-allowed"
+                      title="Previous Page"
+                    >
+                      <ArrowLeft size={16} />
+                    </button>
+                    <span className="text-[10px] font-black uppercase tracking-widest text-gray-400 dark:text-slate-500">
+                      Page {playlistPage} of {totalPages}
+                    </span>
+                    <button
+                      disabled={playlistPage === totalPages}
+                      onClick={() => setPlaylistPage(p => p + 1)}
+                      className="p-1.5 text-gray-400 dark:text-slate-500 hover:text-orange-500 hover:bg-orange-50 dark:hover:bg-orange-900/40 rounded-lg transition-all disabled:opacity-20 disabled:cursor-not-allowed"
+                      title="Next Page"
+                    >
+                      <ChevronRight size={16} />
+                    </button>
+                  </div>
+                )}
+              </>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* Preview Modal */}
+      {previewFile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm transition-opacity" onClick={() => setPreviewFile(null)}>
+          <div className="relative w-full max-w-5xl h-[85vh] bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
+              <h3 className="font-semibold text-gray-800 dark:text-gray-200 flex items-center gap-2 truncate pr-4">
+                <FileText size={20} className="text-orange-500 shrink-0" />
+                <span className="truncate">{previewFile.name}</span>
+              </h3>
+              <button
+                onClick={() => setPreviewFile(null)}
+                className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors shrink-0"
+                title="Close Preview"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-4 bg-gray-100 dark:bg-gray-900 flex items-center justify-center">
+              {previewFile.url && previewFile.name.toLowerCase().endsWith('.pdf') ? (
+                <div className="w-full h-full flex flex-col">
+                  <iframe
+                    src={previewFile.url}
+                    className="w-full h-full rounded-lg shadow-sm bg-white dark:bg-gray-800"
+                    title="PDF Preview"
+                  />
+                  <div className="mt-4 text-center">
+                    <a
+                      href={previewFile.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-sm text-orange-600 hover:text-orange-700 font-medium underline"
+                    >
+                      Open in new tab if preview doesn't load
+                    </a>
+                  </div>
+                </div>
+              ) : (
+                <img src={previewFile.url} alt={previewFile.name} className="max-w-full max-h-full object-contain rounded-lg shadow-sm" />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Beyond 2x Speed Guide Modal */}
+      {showBeyondSpeedModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-white dark:bg-slate-900 border border-gray-100 dark:border-slate-800 rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-2xl bg-orange-100 dark:bg-orange-950/60 text-orange-600 dark:text-orange-400 flex items-center justify-center">
+                  <Gauge size={20} />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-gray-900 dark:text-white">Playing Up to 4x Speed</h3>
+                  <p className="text-xs text-gray-400">2.5x, 3x, 3.5x, 4x Playback Guide</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBeyondSpeedModal(false)}
+                className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs leading-relaxed text-gray-600 dark:text-slate-300">
+              <p>
+                YouTube's embedded player natively supports speeds up to <strong className="text-gray-900 dark:text-white">2.0x</strong> via the IFrame API. When you select 2.5x to 4x, LearnProof automatically configures the player at maximum speed and synchronizes audio/video.
+              </p>
+              
+              <div className="bg-orange-50/70 dark:bg-orange-950/30 border border-orange-200/60 dark:border-orange-800/40 rounded-2xl p-3.5 space-y-2">
+                <div className="font-bold text-orange-700 dark:text-orange-300 flex items-center gap-1.5">
+                  <Sparkles size={14} /> Instant 3x &amp; 4x Overrides:
+                </div>
+                <p>
+                  For unconstrained speeds (up to 4x or beyond), install the free <strong className="text-orange-900 dark:text-orange-200">"Video Speed Controller"</strong> extension (Chrome, Brave, Edge, Firefox). Press <kbd className="px-1.5 py-0.5 bg-white dark:bg-slate-800 rounded border border-orange-200 dark:border-orange-800 font-mono font-bold text-gray-800 dark:text-slate-200">D</kbd> to speed up to any custom rate!
+                </p>
+              </div>
+
+              <div className="bg-gray-50 dark:bg-slate-800/50 rounded-2xl p-3 space-y-2">
+                <div className="font-bold text-gray-800 dark:text-slate-200">Developer / Console 1-Click Code:</div>
+                <p className="text-[11px] text-gray-500 dark:text-slate-400">
+                  You can also paste this one-liner into your browser console (F12) to force true 4x:
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText("document.querySelectorAll('video').forEach(v => { v.playbackRate = 4; v.defaultPlaybackRate = 4; });");
+                    toast.success("Snippet copied! Paste into Console (F12) for true 4x.");
+                  }}
+                  className="w-full py-2 px-3 bg-gray-100 hover:bg-gray-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-gray-800 dark:text-slate-200 rounded-xl font-mono text-[10px] font-bold flex items-center justify-between border border-gray-200 dark:border-slate-700 transition cursor-pointer"
+                >
+                  <span className="truncate">document.querySelectorAll('video').forEach(...)</span>
+                  <Copy size={13} className="text-orange-500 shrink-0 ml-1.5" />
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowBeyondSpeedModal(false)}
+              className="w-full py-2.5 bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs rounded-xl shadow-lg shadow-orange-500/20 transition cursor-pointer"
+            >
+              Got it
+            </button>
+          </div>
+        </div>
+      )}
+
+
+      {/* Off-screen fixed 800px width study guide container for pixel-perfect A4 PDF generation on ALL screen sizes */}
+      {parsedIntuition && parsedIntuition.pages && (
+        <div
+          id="printable-study-guide-source"
+          aria-hidden="true"
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '800px',
+            minWidth: '800px',
+            maxWidth: '800px',
+            zIndex: -9999,
+            opacity: 0,
+            pointerEvents: 'none'
+          }}
+        >
+          {isNotebookView ? (
+            <div className="space-y-6">
+              {parsedIntuition.pages.map((page, idx) => (
+                <HandwrittenNotebookView
+                  key={idx}
+                  content={preprocessMarkdown(page.content)}
+                  title={page.title}
+                  pageNumber={page.pageNumber || idx + 1}
+                  totalPages={parsedIntuition.totalPages}
+                  paperStyle={notesViewMode}
+                  isPdfExportMode={true}
+                  CodeEditorBlock={CodeEditorBlock}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {parsedIntuition.pages.map((page, idx) => (
+                <div
+                  key={idx}
+                  className="topic-page-card w-full bg-white text-slate-900 rounded-2xl shadow-sm p-8 border border-slate-200"
+                >
+                  <div className="border-b border-indigo-100 pb-3 mb-4 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="bg-indigo-600 text-white px-2 py-0.5 rounded-md font-extrabold text-[10px] tracking-wider uppercase">
+                        Topic {page.pageNumber || idx + 1}
+                      </span>
+                      <h4 className="text-base font-bold text-slate-900 m-0">
+                        {page.title}
+                      </h4>
+                    </div>
+                    <span className="text-[10px] font-bold text-slate-400">
+                      {idx + 1} / {parsedIntuition.totalPages}
+                    </span>
+                  </div>
+
+                  <div className="prose max-w-none text-slate-800 text-sm leading-relaxed">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm, remarkMath]}
+                      rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+                      components={{
+                        h1: ({ node, ...props }) => <h1 className="text-base font-bold text-slate-900 mt-3 mb-1.5" {...props} />,
+                        h2: ({ node, ...props }) => <h2 className="text-sm font-bold text-indigo-900 mt-2.5 mb-1" {...props} />,
+                        h3: ({ node, ...props }) => <h3 className="text-sm font-semibold text-indigo-800 mt-2 mb-1" {...props} />,
+                        p: ({ node, ...props }) => <p className="text-sm text-slate-700 leading-relaxed mb-2.5" {...props} />,
+                        ul: ({ node, ...props }) => <ul className="list-disc pl-5 mb-2.5 text-sm text-slate-700 space-y-1" {...props} />,
+                        ol: ({ node, ...props }) => <ol className="list-decimal pl-5 mb-2.5 text-sm text-slate-700 space-y-1" {...props} />,
+                        li: ({ node, ...props }) => <li className="text-slate-700 leading-relaxed [&>p]:my-1" {...props} />,
+                        strong: ({ node, ...props }) => <strong className="font-bold text-slate-900" {...props} />,
+                        pre: ({ node, children, ...props }) => <>{children}</>,
+                        code: ({ node, inline, className, children, ...props }) => {
+                          const match = /language-([a-zA-Z0-9_+#-]+)/.exec(className || '');
+                          const contentStr = String(children || '');
+                          const isMultiLine = contentStr.includes('\n');
+                          const isBlock = inline === false || Boolean(match) || isMultiLine;
+
+                          if (!isBlock) {
+                            return (
+                              <code className="bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded text-[11px] font-mono font-semibold" {...props}>
+                                {children}
+                              </code>
+                            );
+                          }
+                          const codeContent = contentStr.replace(/\n$/, '');
+                          return (
+                            <pre className="bg-slate-900 text-slate-100 p-4 rounded-xl text-xs font-mono overflow-x-auto my-3">
+                              <code>{codeContent}</code>
+                            </pre>
+                          );
+                        },
+                        table: ({ node, ...props }) => (
+                          <div className="overflow-x-auto my-4 rounded-xl border border-slate-200">
+                            <table className="w-full text-xs text-left border-collapse" {...props} />
+                          </div>
+                        ),
+                        thead: ({ node, ...props }) => <thead className="bg-indigo-50 text-indigo-950 font-bold border-b border-slate-200" {...props} />,
+                        tbody: ({ node, ...props }) => <tbody className="divide-y divide-slate-100 bg-white" {...props} />,
+                        tr: ({ node, ...props }) => <tr className="hover:bg-slate-50 transition-colors" {...props} />,
+                        th: ({ node, ...props }) => <th className="px-3.5 py-2 font-semibold text-indigo-900 border-r last:border-r-0 border-slate-200" {...props} />,
+                        td: ({ node, ...props }) => <td className="px-3.5 py-2 text-slate-700 border-r last:border-r-0 border-slate-200" {...props} />,
+                        blockquote: ({ node, ...props }) => <blockquote className="border-l-4 border-indigo-500 pl-4 py-1.5 my-3 italic text-slate-700 bg-indigo-50/50 rounded-r-lg" {...props} />
+                      }}
+                    >
+                      {preprocessMarkdown(page.content)}
+                    </ReactMarkdown>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* High-Speed Clean Study Notes & PDF Export Modal */}
+      {showNotesModal && parsedIntuition && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/80 backdrop-blur-sm transition-opacity"
+          onClick={() => setShowNotesModal(false)}
+        >
+          <div
+            className="relative w-full max-w-4xl h-[92vh] max-h-[92vh] bg-white dark:bg-slate-900 rounded-2xl shadow-2xl overflow-hidden flex flex-col border border-slate-200 dark:border-slate-800"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="no-print flex items-center justify-between px-4 sm:px-6 py-3.5 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/90 shrink-0">
+              <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                <div className="p-2 bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 rounded-xl shrink-0">
+                  <FileText size={20} />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate m-0">
+                    {video?.name || 'Lecture Study Notes'}
+                  </h3>
+                  <p className="text-[10px] sm:text-xs text-slate-500 dark:text-slate-400 m-0 truncate">
+                    {parsedIntuition?.totalPages || 1} {(parsedIntuition?.totalPages || 1) === 1 ? 'Topic' : 'Topics'} • {parsedIntuition?.categoryLabel || 'Digital Study Notes'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                {/* Copy Notes */}
+                <button
+                  onClick={handleCopyAllNotes}
+                  className="px-2.5 py-1.5 sm:px-3 sm:py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold rounded-xl transition flex items-center gap-1.5 cursor-pointer"
+                  title="Copy all notes as Markdown"
+                >
+                  <Copy size={13} />
+                  <span className="hidden sm:inline">Copy All</span>
+                </button>
+
+                {/* Download PDF Button */}
+                <button
+                  disabled={downloadingPdf}
+                  onClick={handleDownloadPdf}
+                  className="px-3 py-1.5 sm:px-4 sm:py-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 active:scale-95 text-white text-xs font-bold rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  title="Download A4 PDF Notes"
+                >
+                  {downloadingPdf ? (
+                    <RefreshCw size={13} className="animate-spin" />
+                  ) : (
+                    <Download size={13} />
+                  )}
+                  <span>{downloadingPdf ? "Preparing..." : "Download PDF"}</span>
+                </button>
+
+                {/* Close Button */}
+                <button
+                  onClick={() => setShowNotesModal(false)}
+                  className="p-1.5 sm:p-2 text-slate-400 hover:text-slate-600 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors cursor-pointer ml-1"
+                  title="Close"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body: High Speed Clean Reader */}
+            <div id="printable-study-guide" className="flex-1 w-full bg-slate-100 dark:bg-slate-950 overflow-y-auto p-3 sm:p-6 space-y-6">
+              {isNotebookView ? (
+                parsedIntuition?.pages?.map((page, idx) => (
+                  <HandwrittenNotebookView
+                    key={idx}
+                    content={preprocessMarkdown(page.content)}
+                    title={page.title}
+                    pageNumber={page.pageNumber || idx + 1}
+                    totalPages={parsedIntuition.totalPages}
+                    paperStyle={notesViewMode}
+                    onCopy={() => handleCopyChapter(page.content)}
+                    copied={copiedChapter}
+                    onOpenInCodeEditor={handleOpenInCodeEditor}
+                    CodeEditorBlock={CodeEditorBlock}
+                  />
+                ))
+              ) : (
+                parsedIntuition?.pages?.map((page, idx) => (
+                  <div
+                    key={idx}
+                    className="topic-page-card w-full bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 rounded-2xl shadow-sm p-5 sm:p-8 border border-slate-200 dark:border-slate-800"
+                  >
+                    {/* Topic Header */}
+                    <div className="border-b border-indigo-100 dark:border-slate-800 pb-3 mb-4 flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="bg-indigo-600 text-white px-2 py-0.5 rounded-md font-extrabold text-[10px] tracking-wider uppercase">
+                          Topic {page.pageNumber || idx + 1}
+                        </span>
+                        <h4 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white m-0">
+                          {page.title}
+                        </h4>
+                      </div>
+                      <span className="text-[10px] font-bold text-slate-400">
+                        {idx + 1} / {parsedIntuition.totalPages}
+                      </span>
+                    </div>
+
+                    {/* Markdown Content */}
+                    <div className="prose dark:prose-invert max-w-none text-slate-800 dark:text-slate-200 text-xs sm:text-sm leading-relaxed">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm, remarkMath]}
+                        rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+                        components={{
+                          h1: ({ node, ...props }) => <h1 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white mt-3 mb-1.5" {...props} />,
+                          h2: ({ node, ...props }) => <h2 className="text-xs sm:text-sm font-bold text-indigo-900 dark:text-indigo-300 mt-2.5 mb-1" {...props} />,
+                          h3: ({ node, ...props }) => <h3 className="text-xs sm:text-sm font-semibold text-indigo-800 dark:text-indigo-400 mt-2 mb-1" {...props} />,
+                          p: ({ node, ...props }) => <p className="text-xs sm:text-sm text-slate-700 dark:text-slate-300 leading-relaxed mb-2.5" {...props} />,
+                          ul: ({ node, ...props }) => <ul className="list-disc pl-5 mb-2.5 text-xs sm:text-sm text-slate-700 dark:text-slate-300 space-y-1" {...props} />,
+                          ol: ({ node, ...props }) => <ol className="list-decimal pl-5 mb-2.5 text-xs sm:text-sm text-slate-700 dark:text-slate-300 space-y-1" {...props} />,
+                          li: ({ node, ...props }) => <li className="text-slate-700 dark:text-slate-300 leading-relaxed [&>p]:my-1" {...props} />,
+                          strong: ({ node, ...props }) => <strong className="font-bold text-slate-900 dark:text-white" {...props} />,
+                          pre: ({ node, children, ...props }) => <>{children}</>,
+                          code: ({ node, inline, className, children, ...props }) => {
+                            const match = /language-([a-zA-Z0-9_+#-]+)/.exec(className || '');
+                            const contentStr = String(children || '');
+                            const isMultiLine = contentStr.includes('\n');
+                            const isBlock = inline === false || Boolean(match) || isMultiLine;
+
+                            if (!isBlock) {
+                              return (
+                                <code className="bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 px-1.5 py-0.5 rounded text-[11px] font-mono font-semibold" {...props}>
+                                  {children}
+                                </code>
+                              );
+                            }
+                            const codeContent = contentStr.replace(/\n$/, '');
+                            return (
+                              <CodeEditorBlock
+                                code={codeContent}
+                                className={className || 'language-python'}
+                                language={match ? match[1] : 'python'}
+                                onOpenInEditor={(c, l) => {
+                                  setShowNotesModal(false);
+                                  handleOpenInCodeEditor(c, l);
+                                }}
+                              />
+                            );
+                          },
+                          table: ({ node, ...props }) => (
+                            <div className="my-3 overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+                              <table className="w-full border-collapse text-xs" {...props} />
+                            </div>
+                          ),
+                          thead: ({ node, ...props }) => <thead className="bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-bold border-b border-slate-200 dark:border-slate-700" {...props} />,
+                          th: ({ node, ...props }) => <th className="border border-slate-200 dark:border-slate-700 px-3 py-2 text-left font-bold" {...props} />,
+                          td: ({ node, ...props }) => <td className="border border-slate-200 dark:border-slate-700 px-3 py-2 text-slate-700 dark:text-slate-300" {...props} />,
+                          blockquote: ({ node, ...props }) => (
+                            <blockquote className="border-l-4 border-indigo-500 bg-indigo-50/50 dark:bg-indigo-950/30 p-3 my-3 text-xs text-indigo-900 dark:text-indigo-200 italic rounded-r-lg" {...props} />
+                          )
+                        }}
+                      >
+                        {preprocessMarkdown(page.content)}
+                      </ReactMarkdown>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Mobile Bottom Quick Action Bar */}
+            <div className="no-print p-3 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center gap-2 sm:hidden shrink-0">
+              <button
+                onClick={handleCopyAllNotes}
+                className="py-2.5 px-4 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 shrink-0"
+              >
+                <Copy size={14} />
+                <span>Copy</span>
+              </button>
+              <button
+                disabled={downloadingPdf}
+                onClick={handleDownloadPdf}
+                className="flex-1 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white text-xs font-bold rounded-xl shadow-md flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 disabled:opacity-50"
+              >
+                {downloadingPdf ? (
+                  <RefreshCw size={14} className="animate-spin" />
+                ) : (
+                  <Download size={14} />
+                )}
+                <span>{downloadingPdf ? "Preparing..." : "Download PDF"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PDF Share & Download Action Sheet / Modal */}
+      {pdfShareModalData && (
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 sm:p-7 max-w-md w-full shadow-2xl space-y-5 animate-scale-up">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-indigo-600 to-purple-600 text-white flex items-center justify-center shadow-lg shadow-indigo-500/30">
+                  <FileText size={22} />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900 dark:text-white m-0">
+                    PDF Study Notes Ready
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 m-0 truncate max-w-[240px]">
+                    {pdfShareModalData.fileName}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setPdfShareModalData(null)}
+                className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Actions List */}
+            <div className="space-y-3 pt-1">
+              {/* Google Drive / Docs Viewer */}
+              <a
+                href={pdfShareModalData.viewerUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setPdfShareModalData(null)}
+                className="w-full py-3.5 px-4 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 active:scale-98 text-white text-sm font-bold rounded-2xl shadow-lg shadow-indigo-500/25 flex items-center justify-center gap-2.5 cursor-pointer transition no-underline"
+              >
+                <BookOpen size={18} />
+                <span>Save / Open in Google Drive</span>
+              </a>
+
+              {/* Direct Download File */}
+              <button
+                onClick={() => {
+                  if (pdfShareModalData.pdfBlob) {
+                    const url = URL.createObjectURL(pdfShareModalData.pdfBlob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = pdfShareModalData.fileName;
+                    document.body.appendChild(a);
+                    a.click();
+                    setTimeout(() => {
+                      if (document.body.contains(a)) document.body.removeChild(a);
+                      URL.revokeObjectURL(url);
+                    }, 5000);
+                  } else {
+                    window.open(pdfShareModalData.downloadUrl, '_blank');
+                  }
+                  toast.success("Download started!");
+                }}
+                className="w-full py-3.5 px-4 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 active:scale-98 text-slate-800 dark:text-slate-100 text-xs sm:text-sm font-bold rounded-2xl flex items-center justify-center gap-2.5 cursor-pointer transition"
+              >
+                <Download size={18} />
+                <span>Download PDF File Directly</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+};
+
+export default Classroom;

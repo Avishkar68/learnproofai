@@ -1,0 +1,80 @@
+# ==============================================================================
+# LearnProof AI - Competition Submission Docker Compose Configuration
+# NOTE: All sensitive production credentials, external domains, and API keys
+# have been replaced with sanitized localhost placeholders.
+# ==============================================================================
+
+services:
+  app:
+    build:
+      context: ./nodejs
+      dockerfile: Dockerfile
+    container_name: learnproof-app
+    restart: always
+    command: node server.js
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@localhost:5432/learnproof_db?connection_limit=15&pool_timeout=30
+      - SOCIAL_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/learnproof_db?connection_limit=15&pool_timeout=30
+      - REDIS_URL=redis://localhost:6379
+      - NODE_ENV=development
+      - GOOGLE_CLIENT_ID=dummy-client-id.apps.googleusercontent.com
+      - MATRIX_HOMESERVER_URL=http://localhost:8008
+      - MATRIX_CLIENT_HOMESERVER_URL=http://localhost:8008
+      - ACCESS_RESTRICTION_MESSAGE="You cannot modify or view code without permission from repo owner."
+    env_file:
+      - ./nodejs/.env.example
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_started
+
+  db:
+    image: postgres:14-alpine
+    container_name: learnproof-db
+    restart: always
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=learnproof_db
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d learnproof_db || exit 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  cache:
+    image: redis:7-alpine
+    container_name: learnproof-cache
+    restart: always
+    ports:
+      - "6379:6379"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_BACKEND_URL=http://localhost:8000
+        - VITE_GOOGLE_CLIENT_ID=dummy-client-id.apps.googleusercontent.com
+        - VITE_ADMIN_EMAIL=admin@localhost
+        - VITE_LINKEDIN_CLIENT_ID=dummy-linkedin-id
+        - VITE_FIREBASE_KEY=AIzaSyDummyKeyForCompetitionSubmissionOnly
+        - VITE_FIREBASE_VAPID_KEY=dummy-vapid-key
+        - VITE_APPLE_CLIENT_ID=com.learnproof.localhost
+    container_name: learnproof-frontend
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - app
+
+volumes:
+  postgres_data:
+

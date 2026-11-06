@@ -1,0 +1,373 @@
+const prisma = require('../lib/prisma');
+const youtube = require('../lib/youtube');
+const cacheService = require('../services/cache.service');
+
+/**
+ * Learning Management Controller
+ */
+const saveLearning = async (req, res) => {
+    const { data } = req.body;
+    const { uid } = req.user;
+
+    if (!data) return res.status(400).json({ error: 'Missing data' });
+
+    try {
+        const user = req.user;
+
+        const contentType = data.type;
+
+        if (contentType === 'video') {
+            const existing = await prisma.video.findUnique({
+                where: { userId_vid: { userId: user.id, vid: data.id } }
+            });
+
+            if (existing) return res.status(200).json({ message: 'You have already saved this before' });
+
+            const videoDetails = await youtube.getVideosDetails([data.id]);
+            const duration_seconds = videoDetails[0]?.contentDetails?.duration 
+                ? youtube.parseDuration(videoDetails[0].contentDetails.duration) 
+                : 0;
+
+            await prisma.video.create({
+                data: {
+                    userId: user.id,
+                    vid: data.id,
+                    name: data.title,
+                    url: data.url,
+                    description: data.description || '',
+                    duration_seconds,
+                    imported_at: new Date()
+                }
+            });
+
+            await prisma.userActivityLog.create({
+                data: { userId: user.id, activity_type: `Learning Import: ${data.title}` }
+            });
+
+            await cacheService.delByPattern(`user:learnings:${user.id}:*`);
+            await cacheService.del(`user:quiz-list:${user.id}`);
+
+            return res.status(200).json({ message: 'Congo!! You have showed your dedication towards learning' });
+        } else if (contentType === 'playlist') {
+            let playlist = await prisma.playlist.findFirst({
+                where: { pid: data.id, userId: user.id }
+            });
+
+            if (playlist) {
+                return res.status(200).json({ message: 'Playlist already saved' });
+            }
+
+            playlist = await prisma.playlist.create({
+                data: {
+                    userId: user.id,
+                    pid: data.id,
+                    name: data.title,
+                    url: data.url,
+                    thumbnail: data.thumbnail || ''
+                }
+            });
+
+            // Fetch all video durations for the playlist in parallel
+            const videoIds = (data.videos || []).map(v => v.video_id);
+            const batches = [];
+            for (let i = 0; i < videoIds.length; i += 50) {
+                batches.push(videoIds.slice(i, i + 50));
+            }
+            const batchResults = await Promise.all(batches.map(batch => youtube.getVideosDetails(batch)));
+            const youtubeDetails = batchResults.flat();
+
+            const durationMap = youtubeDetails.reduce((acc, item) => {
+                if (item?.id && item.contentDetails?.duration) {
+                    acc[item.id] = youtube.parseDuration(item.contentDetails.duration);
+                }
+                return acc;
+            }, {});
+
+            // Bulk check existing videos for this user
+            const existingVideos = await prisma.video.findMany({
+                where: {
+                    userId: user.id,
+                    vid: { in: videoIds }
+                },
+                select: { vid: true, id: true }
+            });
+            const existingVidSet = new Set(existingVideos.map(ev => ev.vid));
+
+            // Fast bulk insert for all new videos
+            const newVideosData = (data.videos || [])
+                .filter(v => !existingVidSet.has(v.video_id))
+                .map(v => ({
+                    userId: user.id,
+                    vid: v.video_id,
+                    name: v.title,
+                    url: v.url,
+                    playlistId: playlist.id,
+                    duration_seconds: durationMap[v.video_id] || 0,
+                    imported_at: new Date(),
+                    description: v.description || '',
+                    position: v.position || 0
+                }));
+
+            if (newVideosData.length > 0) {
+                await prisma.video.createMany({
+                    data: newVideosData,
+                    skipDuplicates: true
+                });
+            }
+
+            // Link existing individual videos to this playlist
+            if (existingVideos.length > 0) {
+                const existingVids = existingVideos.map(ev => ev.vid);
+                await prisma.video.updateMany({
+                    where: {
+                        userId: user.id,
+                        vid: { in: existingVids }
+                    },
+                    data: {
+                        playlistId: playlist.id
+                    }
+                });
+            }
+
+            await prisma.userActivityLog.create({
+                data: { userId: user.id, activity_type: `Learning Import: ${data.title}` }
+            });
+
+            await cacheService.delByPattern(`user:learnings:${user.id}:*`);
+            await cacheService.del(`user:quiz-list:${user.id}`);
+
+            return res.status(201).json({ message: 'Playlist and videos saved' });
+        }
+
+        res.status(400).json({ error: 'Invalid content type' });
+    } catch (error) {
+        console.error('Save learning error:', error);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+};
+
+const getMyLearnings = async (req, res) => {
+    const { page = 1, page_size = 10, searchQuery = '' } = req.body;
+    const { uid } = req.user;
+
+    try {
+        const user = req.user;
+        const cacheKey = `user:learnings:${user.id}:${page}:${searchQuery}`;
+        
+        const cached = await cacheService.get(cacheKey);
+        if (cached) return res.status(200).json(cached);
+
+        const skip = (parseInt(page) - 1) * parseInt(page_size);
+        const take = parseInt(page_size);
+
+        const videoWhere = {
+            userId: user.id,
+            playlistId: null
+        };
+
+        const playlistWhere = {
+            userId: user.id
+        };
+
+        if (searchQuery && searchQuery.trim() !== '') {
+            const queryCondition = { contains: searchQuery };
+            videoWhere.name = queryCondition;
+            playlistWhere.name = queryCondition;
+        }
+
+        const [videos, totalVideos, playlists] = await Promise.all([
+            prisma.video.findMany({
+                where: videoWhere,
+                skip,
+                take,
+                select: {
+                    id: true,
+                    vid: true,
+                    name: true,
+                    url: true,
+                    watch_progress: true,
+                    is_completed: true,
+                    imported_at: true
+                },
+                orderBy: { imported_at: 'desc' }
+            }),
+            prisma.video.count({ where: videoWhere }),
+            prisma.playlist.findMany({
+                where: playlistWhere,
+                select: {
+                    id: true,
+                    pid: true,
+                    name: true,
+                    url: true,
+                    thumbnail: true,
+                    imported_at: true,
+                    duration_goal: true,
+                    videos: {
+                        select: {
+                            id: true,
+                            vid: true,
+                            is_completed: true
+                        }
+                    }
+                },
+                orderBy: { id: 'desc' }
+            })
+        ]);
+
+        // Format paginated response mimic DRF
+        const paginatedVideos = {
+            count: totalVideos,
+            next: totalVideos > skip + take ? true : null, // Simply true/false or full URL if needed
+            previous: skip > 0 ? true : null,
+            results: videos
+        };
+
+        const result = {
+            videos: paginatedVideos,
+            playlists: playlists
+        };
+
+        await cacheService.set(cacheKey, result, 600); // 10 minutes cache
+
+        res.status(200).json(result);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+const deleteVideo = async (req, res) => {
+    const { videoId } = req.body;
+    const { uid } = req.user;
+
+    try {
+        const user = req.user;
+        const video = await prisma.video.findUnique({
+            where: { userId_vid: { userId: user.id, vid: videoId } },
+            select: { playlistId: true, playlist: { select: { pid: true } } }
+        });
+
+        await prisma.video.delete({
+            where: { userId_vid: { userId: user.id, vid: videoId } }
+        });
+
+        // Invalidate playlist cache
+        if (video?.playlist?.pid) {
+            await cacheService.del(`playlist:detail:${user.id}:${video.playlist.pid}`);
+        }
+        
+        // Invalidate learnings cache by pattern
+        await cacheService.delByPattern(`user:learnings:${user.id}:*`);
+        await cacheService.del(`user:quiz-list:${user.id}`);
+
+        res.status(200).json({ message: 'Video deleted successfully' });
+    } catch (error) {
+        res.status(404).json({ error: 'Video not found' });
+    }
+};
+
+const deletePlaylist = async (req, res) => {
+    const { playlistId } = req.body;
+    const { uid } = req.user;
+
+    try {
+        const user = req.user;
+        const playlist = await prisma.playlist.findUnique({
+            where: { userId_pid: { userId: user.id, pid: playlistId } }
+        });
+
+        if (!playlist) throw new Error();
+
+        await prisma.playlist.delete({ where: { id: playlist.id } });
+        
+        // Invalidate cache
+        await cacheService.del(`playlist:detail:${user.id}:${playlistId}`);
+        await cacheService.delByPattern(`user:learnings:${user.id}:*`);
+        await cacheService.del(`user:quiz-list:${user.id}`);
+
+        res.status(200).json({ message: 'Playlist and Videos associated with it deleted successfully' });
+    } catch (error) {
+        res.status(404).json({ error: 'Playlist not found' });
+    }
+};
+
+const getPlaylistDetail = async (req, res) => {
+    const { pid } = req.body;
+    const { uid } = req.user;
+
+    try {
+        const user = req.user;
+        const cacheKey = `playlist:detail:${user.id}:${pid}`;
+        
+        let cachedData = await cacheService.get(cacheKey);
+        if (cachedData) {
+            console.log(`Cache hit for Playlist: ${pid}`);
+            return res.status(200).json(cachedData);
+        }
+
+        const playlist = await prisma.playlist.findUnique({
+            where: { userId_pid: { userId: user.id, pid: pid } },
+            include: { 
+                videos: { 
+                    orderBy: { position: 'asc' },
+                    include: {
+                        quizzes: {
+                            where: { userId: user.id, passed: true },
+                            select: { id: true },
+                            take: 1
+                        }
+                    }
+                } 
+            }
+        });
+
+        if (!playlist) return res.status(404).json({ error: 'Playlist not found' });
+
+        const formattedVideos = playlist.videos.map(v => ({
+            ...v,
+            passed_quiz: v.quizzes.length > 0
+        }));
+
+        const result = {
+            playlist: { ...playlist, videos: undefined, duration_goal: playlist.duration_goal },
+            videos: formattedVideos
+        };
+
+        // Cache for 30 minutes
+        await cacheService.set(cacheKey, result, 1800);
+
+        res.status(200).json(result);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+const setPlaylistGoal = async (req, res) => {
+    const { pid, duration_goal } = req.body;
+    const { uid } = req.user;
+
+    try {
+        const user = req.user;
+        const playlist = await prisma.playlist.update({
+            where: { userId_pid: { userId: user.id, pid: pid } },
+            data: { duration_goal: parseInt(duration_goal) }
+        });
+
+        // Invalidate cache
+        await cacheService.del(`playlist:detail:${user.id}:${pid}`);
+        await cacheService.delByPattern(`user:learnings:${user.id}:*`);
+        await cacheService.del(`user:quiz-list:${user.id}`);
+
+        res.status(200).json({ message: 'Roadmap goal updated successfully', duration_goal: playlist.duration_goal });
+    } catch (error) {
+        res.status(404).json({ error: 'Playlist not found or update failed' });
+    }
+};
+
+module.exports = {
+    saveLearning,
+    getMyLearnings,
+    deleteVideo,
+    deletePlaylist,
+    getPlaylistDetail,
+    setPlaylistGoal,
+};

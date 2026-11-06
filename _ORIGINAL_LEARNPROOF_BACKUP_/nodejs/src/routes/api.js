@@ -1,0 +1,241 @@
+const express = require('express');
+const router = express.Router();
+const authModule = require('../middleware/auth');
+const authMiddleware = authModule.authMiddleware;
+const isAdminMiddleware = authModule.isAdminMiddleware;
+const optionalAuthMiddleware = authModule.optionalAuthMiddleware || (async (req, res, next) => {
+    let idToken = req.body?.idToken || req.query?.idToken || req.headers['authorization']?.split('Bearer ')[1];
+    if (!idToken) return next();
+    try {
+        await authMiddleware(req, res, () => next());
+    } catch (err) {
+        next();
+    }
+});
+const datingAuth = require('../middleware/datingAuth');
+const multer = require('multer');
+
+const authController = require('../controllers/auth.controller');
+const youtubeController = require('../controllers/youtube.controller');
+const learningController = require('../controllers/learning.controller');
+const classroomController = require('../controllers/classroom.controller');
+const socialController = require('../controllers/social.controller');
+const quizController = require('../controllers/quiz.controller');
+const adminController = require('../controllers/admin.controller');
+const messageController = require('../controllers/message.controller');
+const fcmController = require('../controllers/fcm.controller');
+const livekitController = require('../controllers/livekit.controller');
+const metricsController = require('../controllers/metrics.controller');
+const goalController = require('../controllers/goal.controller');
+
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, 'media/video_notes/');
+    },
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        const ext = require('path').extname(file.originalname);
+        cb(null, file.fieldname + '-' + uniqueSuffix + ext);
+    }
+});
+const upload = multer({ storage: storage });
+
+const appStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, 'apps/');
+    },
+    filename: (req, file, cb) => {
+        const platform = req.query.platform;
+        if (platform === 'macos') {
+            cb(null, 'LearnProof-AI.dmg');
+        } else if (platform === 'windows') {
+            cb(null, 'LearnProof-AI.exe');
+        } else {
+            cb(null, file.originalname);
+        }
+    }
+});
+const uploadApp = multer({ storage: appStorage });
+
+// Auth
+router.get('/public-stats', authController.getPublicStats);
+router.post('/signup/', authMiddleware, authController.loginOrRegister);
+router.post('/login/', authMiddleware, authController.loginOrRegister);
+router.post('/oauth-login/', authMiddleware, authController.loginOrRegister);
+router.post('/auth/apple', authController.handleAppleLogin);
+router.post('/auth/apple-login', authController.handleAppleLogin);
+router.post('/auth/demo-login', authController.handleDemoReviewerLogin);
+router.post('/auth/email/send-otp', authController.sendEmailOtp);
+router.post('/auth/email/verify-otp', authController.verifyEmailOtp);
+router.post('/auth/linkedin', authController.handleLinkedInLogin);
+router.post('/auth/linkedin-login', authController.handleLinkedInLogin);
+// GET: native iOS/Android OAuth callback — server exchanges code, stores JWT in Redis, shows completion page
+router.get('/auth/linkedin/callback', authController.handleLinkedInNativeCallback);
+// GET: app polls every 2s to retrieve JWT after user completes LinkedIn auth in browser
+router.get('/auth/linkedin/session/:sessionId', authController.pollLinkedInSession);
+router.post('/profile/', authMiddleware, authController.getProfile);
+router.delete('/profile', authMiddleware, authController.deleteAccount);
+router.post('/delete-account', authMiddleware, authController.deleteAccount);
+router.post('/save-fcm-token', authMiddleware, fcmController.saveFcmToken);
+router.get('/auth/admin-check', authMiddleware, isAdminMiddleware, (req, res) => {
+    res.status(200).json({ isAdmin: true });
+});
+
+// Anonymous Push and Metrics
+router.post('/v1/devices/anonymous-token', fcmController.saveAnonymousFcmToken);
+router.post('/v1/metrics/app-launch', metricsController.logAppLaunch);
+
+// YouTube
+router.post('/import/', authMiddleware, youtubeController.importMetadata);
+router.post('/playlist-preview/', optionalAuthMiddleware, youtubeController.playlistPreview);
+router.post('/youtube-search/', optionalAuthMiddleware, youtubeController.search);
+router.post('/youtube-autocomplete/', optionalAuthMiddleware, youtubeController.autocomplete);
+router.post('/recommend-playlists/', optionalAuthMiddleware, youtubeController.recommendPlaylists);
+
+// Learning
+router.post('/save-learning/', authMiddleware, learningController.saveLearning);
+router.post('/my-learnings/', authMiddleware, learningController.getMyLearnings);
+router.post('/delete-video/', authMiddleware, learningController.deleteVideo);
+router.post('/delete-playlist/', authMiddleware, learningController.deletePlaylist);
+router.post('/playlist-detail/', authMiddleware, learningController.getPlaylistDetail);
+router.post('/set-playlist-goal/', authMiddleware, learningController.setPlaylistGoal);
+
+// Classroom & Progress
+router.post('/continue-watch/', authMiddleware, classroomController.getContinueWatching);
+router.post('/complete/', authMiddleware, classroomController.getCompletedLearnings);
+router.post('/classroom/', authMiddleware, classroomController.getClassroomVideo);
+router.post('/mark-completed/', authMiddleware, classroomController.markVideoCompleted);
+router.post('/unmark-completed/', authMiddleware, classroomController.unmarkVideoCompleted);
+router.post('/update-progress/', authMiddleware, classroomController.updateProgress);
+router.post('/classroom/generate-notes-pdf', authMiddleware, classroomController.generateNotesPdf);
+router.post('/generate-notes-pdf', authMiddleware, classroomController.generateNotesPdf);
+router.post('/classroom/prepare-notes-pdf', authMiddleware, classroomController.prepareNotesPdf);
+router.post('/prepare-notes-pdf', authMiddleware, classroomController.prepareNotesPdf);
+router.post('/classroom/cache-rendered-pdf', authMiddleware, classroomController.cacheRenderedPdf);
+router.post('/cache-rendered-pdf', authMiddleware, classroomController.cacheRenderedPdf);
+router.get('/classroom/download-file/:downloadId/:fileName', classroomController.downloadNotesFile);
+router.get('/download-file/:downloadId/:fileName', classroomController.downloadNotesFile);
+
+
+// Social
+router.get('/video-note/', authMiddleware, socialController.getNote);
+router.post('/video-note/', upload.array('new_files'), authMiddleware, socialController.saveNote);
+router.get('/video-comment/', authMiddleware, socialController.getComments);
+router.post('/video-comment/', authMiddleware, socialController.postComment);
+router.delete('/video-comment/', authMiddleware, socialController.deleteComment);
+router.get('/video-intuition/', authMiddleware, socialController.getIntuition);
+router.post('/video-intuition/', authMiddleware, socialController.getIntuition);
+router.post('/video-ask-ai/', authMiddleware, socialController.askVideoDoubt);
+
+// UGC Safety & Moderation (Apple Guideline 1.2)
+router.post('/social/report', datingAuth, socialController.reportContent);
+router.post('/social/block', datingAuth, socialController.blockUser);
+router.post('/social/unblock', datingAuth, socialController.unblockUser);
+router.get('/social/blocked-users', datingAuth, socialController.getBlockedUsers);
+
+// Quiz & Engagement
+router.post('/quiz-list/', authMiddleware, quizController.getQuizList);
+router.post('/start-quiz/', authMiddleware, quizController.startQuiz);
+router.post('/submit-quiz/', authMiddleware, quizController.submitQuiz);
+router.post('/quiz-flashcards/', authMiddleware, quizController.getQuizFlashcards);
+router.get('/quiz-flashcards/', authMiddleware, quizController.getQuizFlashcards);
+router.post('/certs/', authMiddleware, quizController.getCertificates);
+router.post('/activity/', authMiddleware, quizController.getActivityGraph);
+router.get('/quiz-history/', authMiddleware, quizController.getQuizHistory);
+router.post('/quiz-history/', authMiddleware, quizController.getQuizHistory);
+router.get('/quiz-history/:id', authMiddleware, quizController.getQuizHistoryDetails);
+router.post('/quiz-history/:id', authMiddleware, quizController.getQuizHistoryDetails);
+router.delete('/quiz-history/:id', authMiddleware, quizController.deleteQuizHistory);
+router.get('/verify-certificate/:certId', quizController.verifyCertificate);
+
+// Dynamic Daily Goals
+router.get('/goals/today', authMiddleware, goalController.getTodayGoals);
+router.post('/goals/today', authMiddleware, goalController.getTodayGoals);
+router.post('/goals/custom', authMiddleware, goalController.createGoal);
+router.post('/goals', authMiddleware, goalController.createGoal);
+router.post('/goals/sync-roadmap', authMiddleware, goalController.syncRoadmapGoals);
+router.get('/goals/coach-guidance', authMiddleware, goalController.getCoachGuidance);
+router.post('/goals/coach-guidance', authMiddleware, goalController.getCoachGuidance);
+router.put('/goals/:id', authMiddleware, goalController.updateGoal);
+router.post('/goals/:id/update', authMiddleware, goalController.updateGoal);
+router.post('/goals/:id/toggle', authMiddleware, goalController.toggleGoal);
+router.delete('/goals/:id', authMiddleware, goalController.deleteGoal);
+router.get('/goals/history', authMiddleware, goalController.getGoalHistory);
+router.post('/goals/history', authMiddleware, goalController.getGoalHistory);
+router.post('/goals/log-time', authMiddleware, goalController.logStudyTime);
+
+// Admin Routes
+router.get('/admin/stats', authMiddleware, isAdminMiddleware, adminController.getDashboardStats);
+router.get('/admin/analytics', authMiddleware, isAdminMiddleware, adminController.getAnalyticsData);
+router.get('/admin/users', authMiddleware, isAdminMiddleware, adminController.getUsers);
+router.get('/admin/users/:id', authMiddleware, isAdminMiddleware, adminController.getUserDetails);
+router.put('/admin/users/:id/premium', authMiddleware, isAdminMiddleware, adminController.updateUserPremium);
+router.delete('/admin/users/:id', authMiddleware, isAdminMiddleware, adminController.deleteUser);
+router.get('/admin/content', authMiddleware, isAdminMiddleware, adminController.getContent);
+router.delete('/admin/content/:id', authMiddleware, isAdminMiddleware, adminController.deleteContent);
+router.post('/admin/send-push', authMiddleware, isAdminMiddleware, fcmController.sendExplicitPush);
+router.post('/admin/send-push/', authMiddleware, isAdminMiddleware, fcmController.sendExplicitPush);
+router.get('/admin/notification-templates', authMiddleware, isAdminMiddleware, fcmController.getNotificationTemplates);
+router.post('/admin/notification-templates', authMiddleware, isAdminMiddleware, fcmController.updateNotificationTemplate);
+router.post('/admin/notification-templates/', authMiddleware, isAdminMiddleware, fcmController.updateNotificationTemplate);
+
+// Admin Desktop App Releases
+router.get('/admin/apps', authMiddleware, isAdminMiddleware, adminController.getApps);
+router.post('/admin/apps/upload', authMiddleware, isAdminMiddleware, uploadApp.single('appFile'), adminController.uploadAppFile);
+
+// Admin UGC Moderation & Reports
+router.get('/admin/reports', authMiddleware, isAdminMiddleware, adminController.getReportedContent);
+router.post('/admin/reports/:id/action', authMiddleware, isAdminMiddleware, adminController.handleReportAction);
+router.delete('/admin/reports/:id', authMiddleware, isAdminMiddleware, adminController.deleteReport);
+router.delete('/admin/social/posts/:id', authMiddleware, isAdminMiddleware, adminController.deleteSocialPost);
+
+// Admin Community & Group Management
+router.get('/admin/groups', authMiddleware, isAdminMiddleware, adminController.getAdminGroups);
+router.get('/admin/groups/:groupId/messages', authMiddleware, isAdminMiddleware, adminController.getAdminGroupMessages);
+router.put('/admin/groups/:groupId/lock', authMiddleware, isAdminMiddleware, adminController.toggleAdminGroupLock);
+router.delete('/admin/groups/:groupId', authMiddleware, isAdminMiddleware, adminController.adminDeleteGroup);
+router.delete('/admin/groups/:groupId/members/:userId', authMiddleware, isAdminMiddleware, adminController.adminRemoveGroupMember);
+router.put('/admin/groups/:groupId/transfer', authMiddleware, isAdminMiddleware, adminController.adminTransferGroupOwnership);
+
+// Messages & Inbox
+router.post('/messages/send/', authMiddleware, isAdminMiddleware, messageController.sendMessage);
+router.post('/messages/inbox/', authMiddleware, messageController.getMessages);
+router.post('/messages/sent/', authMiddleware, isAdminMiddleware, messageController.getAdminSentMessages);
+router.post('/messages/mark-read/', authMiddleware, messageController.markRead);
+router.post('/messages/delete/', authMiddleware, isAdminMiddleware, messageController.deleteMessage);
+router.get('/messages/users/', authMiddleware, isAdminMiddleware, messageController.getAllUsers);
+
+// Support
+const supportRoutes = require('./support.routes');
+router.use('/support', supportRoutes);
+
+// Workspaces
+const workspaceRoutes = require('./workspace.routes');
+router.use('/workspaces', workspaceRoutes);
+
+// Referrals & Campus Ambassadors
+const referralRoutes = require('./referral.routes');
+router.use('/referrals', referralRoutes);
+
+// Certificates & Credential Management
+const certificateRoutes = require('./certificate.routes');
+router.use('/certificates', certificateRoutes);
+
+// LiveKit — Video Rooms
+router.get('/livekit/token', datingAuth, livekitController.getToken);
+router.get('/livekit/rooms', datingAuth, livekitController.getRooms);
+router.delete('/livekit/rooms/:roomName', datingAuth, livekitController.deleteRoom);
+router.get('/livekit/rooms/:roomName/participants', datingAuth, livekitController.getParticipants);
+router.delete('/livekit/rooms/:roomName/participants/:identity', datingAuth, livekitController.kickParticipant);
+router.post('/livekit/rooms/:roomName/participants/:identity/promote', datingAuth, livekitController.promoteParticipant);
+router.post('/livekit/rooms/:roomName/participants/:identity/demote', datingAuth, livekitController.demoteParticipant);
+router.post('/livekit/rooms/:roomName/stage-requests', datingAuth, livekitController.submitStageRequest);
+router.get('/livekit/rooms/:roomName/stage-requests', datingAuth, livekitController.getStageRequests);
+router.delete('/livekit/rooms/:roomName/stage-requests/:identity', datingAuth, livekitController.dismissStageRequest);
+router.post('/livekit/translate', datingAuth, livekitController.translateText);
+
+// Online Code Compiler & Multi-Language Runner
+const compilerRoutes = require('./compiler.routes');
+router.use('/compiler', compilerRoutes);
+
+module.exports = router;

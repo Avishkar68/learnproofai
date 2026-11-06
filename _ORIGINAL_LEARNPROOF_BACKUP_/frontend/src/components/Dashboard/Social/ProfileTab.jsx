@@ -1,0 +1,2714 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { 
+  User, Mail, GraduationCap, MapPin, Phone, Instagram, Facebook, 
+  Shield, Edit3, Save, UserPlus, UserCheck, Star, MessageSquare, 
+  Linkedin, Sparkles, ArrowLeft, ChevronRight, ChevronDown, Camera, Heart, 
+  Settings, Plus, FileText, Lightbulb, Check, X, ExternalLink,
+  Users as UsersIcon, Share2, Compass, Award, Globe, Lock, Eye, EyeOff, Trash2,
+  MoreVertical, UserX, Ban, Activity, Bookmark, MessageCircle
+} from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import socialApi from '../../../api/socialApi.js';
+import { useSocialStatusStore } from '../../../store/socialStatusStore.js';
+import { useSocialFeedStore } from '../../../store/socialFeedStore.js';
+import toast from 'react-hot-toast';
+import { useAuth } from '../../../context/AuthContext.jsx';
+import { useModal } from '../../../context/ModalContext.jsx';
+import SocialPostCard from './SocialPostCard.jsx';
+import UserAvatar from '../../Common/UserAvatar.jsx';
+import ProCrownIcon from '../../Common/ProCrownIcon.jsx';
+import { motion, AnimatePresence } from 'framer-motion';
+import { compressImage } from '../../../utils/imageCompressor.js';
+import { resolveMediaUrl } from '../../../utils/heicHelper.js';
+
+const VISIBILITY_OPTIONS = [
+  { value: 'public', label: 'Public', icon: Globe, desc: 'Anyone can see' },
+  { value: 'friends', label: 'Friends', icon: UsersIcon, desc: 'Only connections can see' },
+  { value: 'close_friends', label: 'Close Friends', icon: Star, desc: 'Only close friends can see' },
+  { value: 'private', label: 'Private', icon: Lock, desc: 'Only you can see' },
+];
+
+function CompactVisibilityDropdown({ value = 'public', onChange, label, disabled = false, align = 'right', dropUp }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [openUpward, setOpenUpward] = useState(false);
+  const dropdownRef = useRef(null);
+
+  useEffect(() => {
+    const handleOutsideClick = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+        setIsOpen(false);
+      }
+    };
+    if (isOpen) {
+      document.addEventListener('mousedown', handleOutsideClick);
+      document.addEventListener('touchstart', handleOutsideClick);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+      document.removeEventListener('touchstart', handleOutsideClick);
+    };
+  }, [isOpen]);
+
+  const handleToggle = (e) => {
+    e.stopPropagation();
+    if (!isOpen && dropdownRef.current) {
+      if (typeof dropUp === 'boolean') {
+        setOpenUpward(dropUp);
+      } else {
+        const rect = dropdownRef.current.getBoundingClientRect();
+        const spaceBelow = window.innerHeight - rect.bottom;
+        // Dropdown menu height is ~200px. If less than 230px space below, pop upwards
+        setOpenUpward(spaceBelow < 230);
+      }
+    }
+    setIsOpen(!isOpen);
+  };
+
+  const currentOpt = VISIBILITY_OPTIONS.find((o) => o.value === value) || VISIBILITY_OPTIONS[0];
+  const CurrentIcon = currentOpt.icon;
+
+  const colorStyles = {
+    public: 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800/60 dark:hover:bg-emerald-900/60',
+    friends: 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800/60 dark:hover:bg-blue-900/60',
+    close_friends: 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800/60 dark:hover:bg-amber-900/60',
+    private: 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800/60 dark:hover:bg-rose-900/60',
+  };
+
+  return (
+    <div className="relative inline-flex items-center" ref={dropdownRef}>
+      {label && <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mr-1.5">{label}</span>}
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={handleToggle}
+        title={`Visibility: ${currentOpt.label} (${currentOpt.desc}) - Click to change`}
+        className={`inline-flex items-center gap-1 sm:gap-1.5 px-2 py-1 sm:px-2.5 sm:py-1 rounded-xl text-[11px] sm:text-xs font-bold border transition-all cursor-pointer shadow-2xs active:scale-95 shrink-0 ${
+          colorStyles[currentOpt.value] || colorStyles.public
+        }`}
+      >
+        <CurrentIcon size={12} className={`shrink-0 ${currentOpt.value === 'close_friends' ? 'fill-amber-500 text-amber-500' : ''}`} />
+        <span className="capitalize">{currentOpt.label}</span>
+        <ChevronDown size={11} className={`transition-transform duration-200 opacity-60 ${isOpen ? 'rotate-180' : ''}`} />
+      </button>
+
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: openUpward ? 6 : -6 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: openUpward ? 6 : -6 }}
+            transition={{ duration: 0.15 }}
+            className={`absolute z-[120] w-52 sm:w-56 p-1.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-2xl backdrop-blur-md ${
+              openUpward ? 'bottom-full mb-2' : 'top-full mt-2'
+            } ${
+              align === 'right' ? 'right-0' : 'left-0'
+            }`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-2 py-1 text-[10px] font-extrabold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+              Select Privacy
+            </div>
+            <div className="space-y-1">
+              {VISIBILITY_OPTIONS.map((opt) => {
+                const isSelected = (value || 'public') === opt.value;
+                const OptIcon = opt.icon;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => {
+                      onChange && onChange(opt.value);
+                      setIsOpen(false);
+                    }}
+                    className={`w-full flex items-center justify-between p-2 rounded-xl text-left transition cursor-pointer ${
+                      isSelected
+                        ? 'bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 font-bold'
+                        : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/60 font-medium'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div
+                        className={`p-1.5 rounded-lg shrink-0 ${
+                          opt.value === 'public'
+                            ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-400'
+                            : opt.value === 'friends'
+                            ? 'bg-blue-100 text-blue-600 dark:bg-blue-950/60 dark:text-blue-400'
+                            : opt.value === 'close_friends'
+                            ? 'bg-amber-100 text-amber-600 dark:bg-amber-950/60 dark:text-amber-400'
+                            : 'bg-rose-100 text-rose-600 dark:bg-rose-950/60 dark:text-rose-400'
+                        }`}
+                      >
+                        <OptIcon size={12} className={opt.value === 'close_friends' ? 'fill-amber-500 text-amber-500' : ''} />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold leading-tight">{opt.label}</div>
+                        <div className="text-[10px] text-gray-400 dark:text-gray-400 leading-tight truncate">
+                          {opt.desc}
+                        </div>
+                      </div>
+                    </div>
+                    {isSelected && <Check size={13} className="text-orange-600 dark:text-orange-400 shrink-0 ml-1" />}
+                  </button>
+                );
+              })}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// Kept for backwards compatibility and clean compact rendering across the file
+const VisibilityPill = CompactVisibilityDropdown;
+
+const CONTACT_FIELDS_CONFIG = [
+  {
+    id: 'phone',
+    label: 'Phone Number',
+    shortLabel: 'Phone',
+    icon: Phone,
+    color: 'text-orange-500',
+    bg: 'bg-orange-100 dark:bg-orange-950/50',
+    placeholder: '+91 XXXXX XXXXX',
+    type: 'tel',
+    valueKey: 'phoneNumber',
+    visKey: 'phoneVisibility',
+    helper: 'Only shown according to your privacy choice',
+    isEmail: false,
+  },
+  {
+    id: 'email',
+    label: 'Email Address',
+    shortLabel: 'Email',
+    icon: Mail,
+    color: 'text-amber-500',
+    bg: 'bg-amber-100 dark:bg-amber-950/50',
+    valueKey: null,
+    visKey: 'emailVisibility',
+    helper: 'Account login email address',
+    isEmail: true,
+  },
+  {
+    id: 'whatsapp',
+    label: 'WhatsApp Number',
+    shortLabel: 'WhatsApp',
+    icon: MessageSquare,
+    color: 'text-emerald-500',
+    bg: 'bg-emerald-100 dark:bg-emerald-950/50',
+    placeholder: '+91 XXXXX XXXXX',
+    type: 'tel',
+    valueKey: 'whatsappNumber',
+    visKey: 'whatsappVisibility',
+    helper: 'Direct WhatsApp link on your profile',
+    isEmail: false,
+  },
+  {
+    id: 'instagram',
+    label: 'Instagram Handle',
+    shortLabel: 'Instagram',
+    icon: Instagram,
+    color: 'text-pink-500',
+    bg: 'bg-pink-100 dark:bg-pink-950/50',
+    placeholder: '@username',
+    type: 'text',
+    valueKey: 'instagramHandle',
+    visKey: 'instagramVisibility',
+    helper: 'Instagram username or handle',
+    isEmail: false,
+  },
+  {
+    id: 'linkedin',
+    label: 'LinkedIn Profile URL',
+    shortLabel: 'LinkedIn',
+    icon: Linkedin,
+    color: 'text-blue-600',
+    bg: 'bg-blue-100 dark:bg-blue-950/50',
+    placeholder: 'https://linkedin.com/in/username',
+    type: 'url',
+    valueKey: 'linkedinUrl',
+    visKey: 'linkedinVisibility',
+    helper: 'Full LinkedIn profile URL',
+    isEmail: false,
+  },
+  {
+    id: 'facebook',
+    label: 'Facebook Profile URL',
+    shortLabel: 'Facebook',
+    icon: Facebook,
+    color: 'text-indigo-600',
+    bg: 'bg-indigo-100 dark:bg-indigo-950/50',
+    placeholder: 'https://facebook.com/username',
+    type: 'url',
+    valueKey: 'facebookUrl',
+    visKey: 'facebookVisibility',
+    helper: 'Full Facebook profile URL',
+    isEmail: false,
+  },
+];
+
+function VisibilityBadge({ visibility = 'public' }) {
+  const v = visibility || 'public';
+  if (v === 'private') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-50 text-rose-600 dark:bg-rose-950/40 dark:text-rose-400 border border-rose-200/60 dark:border-rose-900/40">
+        <Lock size={10} />
+        <span>Private</span>
+      </span>
+    );
+  }
+  if (v === 'close_friends') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/60 dark:border-amber-900/40">
+        <Star size={10} className="fill-amber-500 text-amber-500" />
+        <span>Close Friends</span>
+      </span>
+    );
+  }
+  if (v === 'friends') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-400 border border-blue-200/60 dark:border-blue-900/40">
+        <UsersIcon size={10} />
+        <span>Friends</span>
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400 border border-emerald-200/60 dark:border-emerald-900/40">
+      <Globe size={10} />
+      <span>Public</span>
+    </span>
+  );
+}
+
+const PLATFORM_COVER_IMAGE = '/assets/learnproof_cover.jpg';
+
+export default function ProfileTab({ currentUserId, viewUserId, onBackToFeed, onSelectChatUser, onViewProfile, onCreatePost }) {
+  const { user, updateUser } = useAuth();
+  const navigate = useNavigate();
+  const { confirm } = useModal();
+  const socialUser = useSocialFeedStore((state) => state.socialUser);
+  const updateSocialUser = useSocialFeedStore((state) => state.updateSocialUser);
+  const storeFriends = useSocialFeedStore((state) => state.friends);
+  const setSelectedTag = useSocialFeedStore((state) => state.setSelectedTag);
+  const onlineUserIds = useSocialStatusStore((state) => state.onlineUserIds);
+
+  const [profile, setProfile] = useState(null);
+  const [posts, setPosts] = useState([]);
+  const [likedPosts, setLikedPosts] = useState([]);
+  const [likedPostsLoading, setLikedPostsLoading] = useState(false);
+  const [commentedPosts, setCommentedPosts] = useState([]);
+  const [commentedPostsLoading, setCommentedPostsLoading] = useState(false);
+  const [savedPosts, setSavedPosts] = useState([]);
+  const [savedPostsLoading, setSavedPostsLoading] = useState(false);
+  const [activitySubTab, setActivitySubTab] = useState('liked'); // 'liked', 'commented', 'saved'
+  const [activityCounts, setActivityCounts] = useState({ likedCount: 0, commentedCount: 0, savedCount: 0, totalCount: 0 });
+  const [friendsList, setFriendsList] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [postsLoading, setPostsLoading] = useState(true);
+  const [friendsLoading, setFriendsLoading] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [formData, setFormData] = useState({});
+  const [activeContactTab, setActiveContactTab] = useState('phone');
+  const [showAllContacts, setShowAllContacts] = useState(false);
+  const [expandedSection, setExpandedSection] = useState(null); // 'academics', 'contact', 'social', 'settings'
+  const [activeTab, setActiveTab] = useState('posts'); // 'posts', 'activity', 'friends'
+  const [showAvatarPreview, setShowAvatarPreview] = useState(false);
+  const fileInputRef = useRef(null);
+  const coverInputRef = useRef(null);
+  const avatarInputRef = useRef(null);
+  const modalAvatarInputRef = useRef(null);
+  const mobileExpandedPanelRef = useRef(null);
+  const [showOptionsMenu, setShowOptionsMenu] = useState(false);
+  const optionsMenuRef = useRef(null);
+
+  // Lock body scroll when Edit Profile modal is open to avoid background interaction
+  useEffect(() => {
+    if (isEditing) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [isEditing]);
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (optionsMenuRef.current && !optionsMenuRef.current.contains(e.target)) {
+        setShowOptionsMenu(false);
+      }
+    };
+    if (showOptionsMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('touchstart', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('touchstart', handleClickOutside);
+    };
+  }, [showOptionsMenu]);
+
+  const getSocialLink = (type, val) => {
+    if (!val || val === 'Not Connected' || val === 'Not Set' || val === 'Private') return null;
+    const str = String(val).trim();
+    const lower = String(type).toLowerCase();
+
+    if (lower.includes('instagram')) {
+      if (str.startsWith('http://') || str.startsWith('https://')) return str;
+      return `https://instagram.com/${str.replace(/^@/, '')}`;
+    }
+    if (lower.includes('linkedin')) {
+      if (str.startsWith('http://') || str.startsWith('https://')) return str;
+      return `https://${str}`;
+    }
+    if (lower.includes('whatsapp')) {
+      const digits = str.replace(/[^0-9]/g, '');
+      const phone = digits.length === 10 ? `91${digits}` : digits;
+      return `https://wa.me/${phone}`;
+    }
+    if (lower.includes('facebook')) {
+      if (str.startsWith('http://') || str.startsWith('https://')) return str;
+      return `https://facebook.com/${str}`;
+    }
+    if (lower.includes('phone')) {
+      return `tel:${str.replace(/\s+/g, '')}`;
+    }
+    if (lower.includes('email')) {
+      return `mailto:${str}`;
+    }
+    return str.startsWith('http') ? str : `https://${str}`;
+  };
+
+  const handleToggleSection = (sectionKey) => {
+    setExpandedSection(prev => {
+      const isOpening = prev !== sectionKey;
+      if (isOpening) {
+        setTimeout(() => {
+          mobileExpandedPanelRef.current?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'center'
+          });
+        }, 120);
+      }
+      return isOpening ? sectionKey : null;
+    });
+  };
+
+  useEffect(() => {
+    if (expandedSection && mobileExpandedPanelRef.current) {
+      const timer = setTimeout(() => {
+        mobileExpandedPanelRef.current?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'center'
+        });
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [expandedSection]);
+
+  const effectiveCurrentUserId = currentUserId || socialUser?.id || user?.id;
+  const isOwnProfile = !viewUserId || viewUserId === 'me' || viewUserId === 'self' || (effectiveCurrentUserId && String(viewUserId) === String(effectiveCurrentUserId));
+  const targetId = isOwnProfile ? 'me' : (parseInt(viewUserId, 10) || viewUserId);
+  const isMobileOrApp = typeof navigator !== 'undefined' && (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || navigator.userAgent.includes('LearnProofApp'));
+
+  const isOnline = isOwnProfile ? true : (
+    onlineUserIds instanceof Set 
+      ? onlineUserIds.has(profile?.id) 
+      : Array.isArray(onlineUserIds) 
+        ? onlineUserIds.includes(profile?.id) 
+        : false
+  );
+
+  useEffect(() => {
+    setPosts([]);
+    setLikedPosts([]);
+    setCommentedPosts([]);
+    setSavedPosts([]);
+    setProfile(null);
+    fetchProfile();
+    fetchUserPosts(true);
+    if (isOwnProfile) {
+      fetchFriends();
+      fetchActivityCounts();
+      fetchLikedPosts(true);
+    } else {
+      setActiveTab('posts');
+    }
+  }, [viewUserId, isOwnProfile]);
+
+  const fetchUserPosts = async (showLoading = false) => {
+    if (showLoading) setPostsLoading(true);
+    try {
+      const authorQuery = isOwnProfile ? 'me' : targetId;
+      const response = await socialApi.get(`/posts/feed?authorId=${authorQuery}`);
+      const postsData = Array.isArray(response.data) ? response.data : [];
+      setPosts(postsData);
+    } catch (err) {
+      console.error('Failed to fetch user posts', err);
+      if (showLoading) setPosts([]);
+    } finally {
+      if (showLoading) setPostsLoading(false);
+    }
+  };
+
+  const fetchActivityCounts = async () => {
+    if (!isOwnProfile) return;
+    try {
+      const res = await socialApi.get('/posts/activity/counts');
+      if (res.data) {
+        setActivityCounts(res.data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch activity counts', err);
+    }
+  };
+
+  const fetchLikedPosts = async (showLoading = false) => {
+    if (showLoading) setLikedPostsLoading(true);
+    try {
+      const response = await socialApi.get('/posts/activity/liked');
+      const postsData = Array.isArray(response.data) ? response.data : [];
+      setLikedPosts(postsData);
+      setActivityCounts((prev) => ({
+        ...prev,
+        likedCount: postsData.length,
+        totalCount: postsData.length + prev.commentedCount + prev.savedCount,
+      }));
+    } catch (err) {
+      console.error('Failed to fetch liked posts', err);
+      if (showLoading) setLikedPosts([]);
+    } finally {
+      if (showLoading) setLikedPostsLoading(false);
+    }
+  };
+
+  const fetchCommentedPosts = async (showLoading = false) => {
+    if (showLoading) setCommentedPostsLoading(true);
+    try {
+      const response = await socialApi.get('/posts/activity/commented');
+      const postsData = Array.isArray(response.data) ? response.data : [];
+      setCommentedPosts(postsData);
+      setActivityCounts((prev) => ({
+        ...prev,
+        commentedCount: postsData.length,
+        totalCount: prev.likedCount + postsData.length + prev.savedCount,
+      }));
+    } catch (err) {
+      console.error('Failed to fetch commented posts', err);
+      if (showLoading) setCommentedPosts([]);
+    } finally {
+      if (showLoading) setCommentedPostsLoading(false);
+    }
+  };
+
+  const fetchSavedPosts = async (showLoading = false) => {
+    if (showLoading) setSavedPostsLoading(true);
+    try {
+      const response = await socialApi.get('/posts/activity/saved');
+      const postsData = Array.isArray(response.data) ? response.data : [];
+      setSavedPosts(postsData);
+      setActivityCounts((prev) => ({
+        ...prev,
+        savedCount: postsData.length,
+        totalCount: prev.likedCount + prev.commentedCount + postsData.length,
+      }));
+    } catch (err) {
+      console.error('Failed to fetch saved posts', err);
+      if (showLoading) setSavedPosts([]);
+    } finally {
+      if (showLoading) setSavedPostsLoading(false);
+    }
+  };
+
+  const fetchActivityData = (subTab = activitySubTab) => {
+    fetchActivityCounts();
+    if (subTab === 'liked') fetchLikedPosts(likedPosts.length === 0);
+    else if (subTab === 'commented') fetchCommentedPosts(commentedPosts.length === 0);
+    else if (subTab === 'saved') fetchSavedPosts(savedPosts.length === 0);
+  };
+
+  const handlePostLike = (postId) => {
+    const updatePostList = (list) =>
+      list.map((p) => {
+        if (p.id === postId) {
+          const liked = p.likes?.some((l) => String(l.id) === String(effectiveCurrentUserId));
+          const nextLiked = !liked;
+          const updatedLikes = nextLiked
+            ? [...(p.likes || []), { id: effectiveCurrentUserId }]
+            : (p.likes || []).filter((l) => String(l.id) !== String(effectiveCurrentUserId));
+          const currentCount = p._count?.likes ?? 0;
+          return {
+            ...p,
+            likes: updatedLikes,
+            _count: {
+              ...p._count,
+              likes: nextLiked ? currentCount + 1 : Math.max(0, currentCount - 1),
+            },
+          };
+        }
+        return p;
+      });
+
+    setPosts(updatePostList);
+    setLikedPosts(updatePostList);
+
+    if (isOwnProfile) {
+      fetchLikedPosts(false);
+      fetchActivityCounts();
+    }
+  };
+
+  const handlePostSave = (postId) => {
+    if (isOwnProfile) {
+      fetchSavedPosts(false);
+      fetchActivityCounts();
+    }
+  };
+
+  // Real-time synchronization for likes, saves, comments and post events
+  useEffect(() => {
+    const handleLikeUpdate = (e) => {
+      const data = e.detail;
+      if (!data) return;
+
+      setPosts((prev) =>
+        prev.map((p) => {
+          if (p.id === data.postId) {
+            let updatedLikes = p.likes || [];
+            if (effectiveCurrentUserId && data.userId === effectiveCurrentUserId) {
+              if (data.isLiked) {
+                if (!updatedLikes.some((l) => l.id === effectiveCurrentUserId)) {
+                  updatedLikes = [...updatedLikes, { id: effectiveCurrentUserId }];
+                }
+              } else {
+                updatedLikes = updatedLikes.filter((l) => l.id !== effectiveCurrentUserId);
+              }
+            }
+            return {
+              ...p,
+              likes: updatedLikes,
+              _count: {
+                ...p._count,
+                likes: typeof data.likesCount === 'number' ? data.likesCount : p._count?.likes,
+              },
+            };
+          }
+          return p;
+        })
+      );
+
+      if (isOwnProfile) {
+        if (data.userId === effectiveCurrentUserId) {
+          if (!data.isLiked) {
+            setLikedPosts((prev) => prev.filter((p) => p.id !== data.postId));
+          } else {
+            fetchLikedPosts(false);
+          }
+          fetchActivityCounts();
+        } else {
+          setLikedPosts((prev) =>
+            prev.map((p) => {
+              if (p.id === data.postId) {
+                return {
+                  ...p,
+                  _count: {
+                    ...p._count,
+                    likes: typeof data.likesCount === 'number' ? data.likesCount : p._count?.likes,
+                  },
+                };
+              }
+              return p;
+            })
+          );
+        }
+      }
+    };
+
+    const handleSaveUpdate = (e) => {
+      const data = e.detail;
+      if (!data) return;
+
+      setPosts((prev) =>
+        prev.map((p) => {
+          if (p.id === data.postId) {
+            let updatedSaved = p.savedBy || [];
+            if (effectiveCurrentUserId && data.userId === effectiveCurrentUserId) {
+              if (data.isSaved) {
+                if (!updatedSaved.some((u) => u.id === effectiveCurrentUserId)) {
+                  updatedSaved = [...updatedSaved, { id: effectiveCurrentUserId }];
+                }
+              } else {
+                updatedSaved = updatedSaved.filter((u) => u.id !== effectiveCurrentUserId);
+              }
+            }
+            return {
+              ...p,
+              savedBy: updatedSaved,
+              isSaved: effectiveCurrentUserId && data.userId === effectiveCurrentUserId ? data.isSaved : p.isSaved,
+            };
+          }
+          return p;
+        })
+      );
+
+      if (isOwnProfile) {
+        if (data.userId === effectiveCurrentUserId) {
+          if (!data.isSaved) {
+            setSavedPosts((prev) => prev.filter((p) => p.id !== data.postId));
+          } else {
+            fetchSavedPosts(false);
+          }
+          fetchActivityCounts();
+        }
+      }
+    };
+
+    const handleCommentAdded = (e) => {
+      const data = e.detail;
+      if (isOwnProfile) {
+        if (data?.comment?.authorId === effectiveCurrentUserId) {
+          fetchCommentedPosts(false);
+          fetchActivityCounts();
+        }
+      }
+    };
+
+    const handlePostDeleted = (e) => {
+      const data = e.detail;
+      if (!data?.postId) return;
+      setPosts((prev) => prev.filter((p) => p.id !== data.postId));
+      setLikedPosts((prev) => prev.filter((p) => p.id !== data.postId));
+      setCommentedPosts((prev) => prev.filter((p) => p.id !== data.postId));
+      setSavedPosts((prev) => prev.filter((p) => p.id !== data.postId));
+      fetchActivityCounts();
+    };
+
+    const handlePostUpdated = (e) => {
+      const updated = e.detail;
+      if (!updated?.id) return;
+      setPosts((prev) => prev.map((p) => (p.id === updated.id ? { ...p, ...updated } : p)));
+      setLikedPosts((prev) => prev.map((p) => (p.id === updated.id ? { ...p, ...updated } : p)));
+      setCommentedPosts((prev) => prev.map((p) => (p.id === updated.id ? { ...p, ...updated } : p)));
+      setSavedPosts((prev) => prev.map((p) => (p.id === updated.id ? { ...p, ...updated } : p)));
+    };
+
+    window.addEventListener('social:post_like_updated', handleLikeUpdate);
+    window.addEventListener('social:post_save_updated', handleSaveUpdate);
+    window.addEventListener('social:post_comment_added', handleCommentAdded);
+    window.addEventListener('social:post_deleted', handlePostDeleted);
+    window.addEventListener('social:post_updated', handlePostUpdated);
+
+    return () => {
+      window.removeEventListener('social:post_like_updated', handleLikeUpdate);
+      window.removeEventListener('social:post_save_updated', handleSaveUpdate);
+      window.removeEventListener('social:post_comment_added', handleCommentAdded);
+      window.removeEventListener('social:post_deleted', handlePostDeleted);
+      window.removeEventListener('social:post_updated', handlePostUpdated);
+    };
+  }, [effectiveCurrentUserId, isOwnProfile]);
+
+  const fetchProfile = async () => {
+    setLoading(true);
+    try {
+      const endpoint = isOwnProfile ? '/users/profile/me' : `/users/profile/${targetId}`;
+      const response = await socialApi.get(endpoint);
+      setProfile(response.data);
+      if (response.data?.id && updateSocialUser && isOwnProfile) {
+        updateSocialUser(response.data);
+      }
+      setFormData({
+        ...response.data,
+        phoneVisibility: response.data.phoneVisibility || 'public',
+        emailVisibility: response.data.emailVisibility || 'private',
+        whatsappVisibility: response.data.whatsappVisibility || 'public',
+        instagramVisibility: response.data.instagramVisibility || 'public',
+        linkedinVisibility: response.data.linkedinVisibility || 'public',
+        facebookVisibility: response.data.facebookVisibility || 'public',
+      });
+    } catch (err) {
+      console.error('Failed to fetch profile', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Automatically sync profile connection status with global friends store in real-time
+  useEffect(() => {
+    if (!profile?.id || isOwnProfile) return;
+    const isNowFriend = storeFriends.some(f => Number(f.id) === Number(profile.id));
+    if (isNowFriend) {
+      setProfile(prev => {
+        if (!prev) return prev;
+        if (prev.isFriend && !prev.hasPendingRequest) return prev;
+        return {
+          ...prev,
+          isFriend: true,
+          hasPendingRequest: false,
+          isRequestSender: false
+        };
+      });
+    }
+  }, [storeFriends, profile?.id, isOwnProfile]);
+
+  // Direct socket window event listener for instant zero-reload status change
+  useEffect(() => {
+    const handleAccepted = (e) => {
+      const targetId = Number(e.detail?.userId || e.detail?.targetUserId || e.detail?.friend?.id);
+      if (profile?.id && Number(profile.id) === targetId) {
+        setProfile(prev => prev ? ({
+          ...prev,
+          isFriend: true,
+          hasPendingRequest: false,
+          isRequestSender: false
+        }) : prev);
+      }
+    };
+    const handleRemoved = (e) => {
+      const targetId = Number(e.detail?.userId);
+      if (profile?.id && Number(profile.id) === targetId) {
+        setProfile(prev => prev ? ({
+          ...prev,
+          isFriend: false,
+          hasPendingRequest: false,
+          isRequestSender: false
+        }) : prev);
+      }
+    };
+    window.addEventListener('social:friend_accepted', handleAccepted);
+    window.addEventListener('social:friend_removed', handleRemoved);
+    return () => {
+      window.removeEventListener('social:friend_accepted', handleAccepted);
+      window.removeEventListener('social:friend_removed', handleRemoved);
+    };
+  }, [profile?.id]);
+
+  const fetchFriends = async () => {
+    setFriendsLoading(true);
+    try {
+      const res = await socialApi.get('/social/friendships');
+      const rawFriends = Array.isArray(res.data?.friends) 
+        ? res.data.friends 
+        : Array.isArray(res.data) 
+          ? res.data 
+          : [];
+      if (rawFriends.length > 0) {
+        setFriendsList(rawFriends);
+      } else if (storeFriends && storeFriends.length > 0) {
+        setFriendsList(storeFriends);
+      } else {
+        setFriendsList([]);
+      }
+    } catch (err) {
+      console.debug('Failed to fetch friends list:', err?.message);
+      if (storeFriends && storeFriends.length > 0) {
+        setFriendsList(storeFriends);
+      }
+    } finally {
+      setFriendsLoading(false);
+    }
+  };
+
+  const handleAvatarChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (e.target) e.target.value = '';
+
+    const fileName = (file.name || '').toLowerCase();
+    const isLikelyImage = 
+      file.type.startsWith('image/') || 
+      /\.(jpe?g|png|gif|webp|heic|heif|bmp|tiff?|avif)$/i.test(fileName) ||
+      file.type === '';
+
+    if (!isLikelyImage) {
+      toast.error('Please select a valid image file');
+      return;
+    }
+
+    try {
+      // Compress avatar with high-quality preservation (~50-80KB, 600x600)
+      const compressedBase64 = await compressImage(file, 600, 600, 0.88);
+      
+      // Optimistically update local profile and form data
+      setProfile(prev => ({ ...prev, profilePicture: compressedBase64 }));
+      setFormData(prev => ({ ...prev, profilePicture: compressedBase64 }));
+
+      // Send ONLY profilePicture to backend without altering other fields
+      const response = await socialApi.put('/users/profile', {
+        profilePicture: compressedBase64,
+      });
+
+      const updatedPic = response.data?.profilePicture || compressedBase64;
+      setProfile(prev => ({ ...prev, profilePicture: updatedPic }));
+      setFormData(prev => ({ ...prev, profilePicture: updatedPic }));
+
+      if (updateSocialUser) {
+        updateSocialUser({
+          profilePicture: updatedPic,
+          avatar: updatedPic,
+        });
+      }
+
+      if (updateUser && isOwnProfile) {
+        updateUser({
+          picture: updatedPic,
+          profilePicture: updatedPic,
+        });
+      }
+    } catch (err) {
+      console.error('Failed to update avatar:', err);
+      toast.error(err.message || 'Failed to update profile picture');
+    }
+  };
+
+  const handleCoverChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const fileName = (file.name || '').toLowerCase();
+    const isLikelyImage = 
+      file.type.startsWith('image/') || 
+      /\.(jpe?g|png|gif|webp|heic|heif|bmp|tiff?|avif)$/i.test(fileName) ||
+      file.type === '';
+
+    if (!isLikelyImage) {
+      toast.error('Please select a valid image file');
+      return;
+    }
+
+    try {
+      // Compress cover image preserving crisp widescreen quality (~150-250KB, 1600x650)
+      const compressedBase64 = await compressImage(file, 1600, 650, 0.85);
+
+      // Optimistically update local view
+      setProfile(prev => ({ ...prev, coverImage: compressedBase64 }));
+      setFormData(prev => ({ ...prev, coverImage: compressedBase64 }));
+
+      // Persist to backend database so other users can see it
+      const response = await socialApi.put('/users/profile', {
+        coverImage: compressedBase64,
+      });
+
+      const updatedCover = response.data?.coverImage || compressedBase64;
+      setProfile(prev => ({ ...prev, coverImage: updatedCover }));
+      setFormData(prev => ({ ...prev, coverImage: updatedCover }));
+
+      if (updateSocialUser) {
+        updateSocialUser({ coverImage: updatedCover });
+      }
+    } catch (err) {
+      console.error('Failed to update cover photo:', err);
+      toast.error(err?.response?.data?.error || 'Failed to update cover photo');
+      fetchProfile();
+    } finally {
+      if (e.target) e.target.value = '';
+    }
+  };
+
+
+  const handleSave = async (e) => {
+    e?.preventDefault?.();
+    try {
+      const response = await socialApi.put('/users/profile', formData);
+      setProfile(response.data);
+      setFormData({
+        ...response.data,
+        phoneVisibility: response.data.phoneVisibility || 'public',
+        emailVisibility: response.data.emailVisibility || 'private',
+        whatsappVisibility: response.data.whatsappVisibility || 'public',
+        instagramVisibility: response.data.instagramVisibility || 'public',
+        linkedinVisibility: response.data.linkedinVisibility || 'public',
+        facebookVisibility: response.data.facebookVisibility || 'public',
+      });
+      setIsEditing(false);
+
+      if (updateSocialUser) {
+        updateSocialUser(response.data);
+      }
+
+      if (updateUser && isOwnProfile) {
+        updateUser({
+          name: response.data.name,
+          picture: response.data.profilePicture || response.data.avatar
+        });
+      }
+    } catch (err) {
+      console.error('Failed to update profile', err);
+      toast.error('Failed to update profile.');
+    }
+  };
+
+  const handleQuickVisibilityChange = async (fieldName, newVisibility) => {
+    const updatedData = {
+      ...formData,
+      [fieldName]: newVisibility,
+    };
+    setFormData(updatedData);
+    setProfile(prev => ({ ...prev, [fieldName]: newVisibility }));
+
+    try {
+      await socialApi.put('/users/profile', updatedData);
+    } catch (err) {
+      console.error('Failed to update visibility', err);
+      toast.error('Failed to update visibility');
+      fetchProfile();
+    }
+  };
+
+
+  const handleFriendAction = async () => {
+    if (!profile) return;
+    try {
+      if (profile.hasPendingRequest) {
+        if (profile.isRequestSender) {
+          setProfile(prev => ({ ...prev, hasPendingRequest: false, isRequestSender: false }));
+          await socialApi.post('/social/remove-friendship', { targetUserId: profile.id });
+          useSocialFeedStore.getState().handleFriendRequestRemoved({ userId: profile.id });
+          useSocialFeedStore.getState().removeSentRequest(profile.id);
+        } else {
+          setProfile(prev => ({ ...prev, hasPendingRequest: false, isRequestSender: false, isFriend: true }));
+          await socialApi.post('/social/accept-friendship', { targetUserId: profile.id });
+          useSocialFeedStore.getState().handleFriendRequestAccepted({ userId: profile.id, friend: profile });
+          useSocialFeedStore.getState().removeSentRequest(profile.id);
+        }
+      } else if (profile.isFriend) {
+        const confirmed = await confirm({
+          title: 'Remove Connection?',
+          message: `You'll remove ${profile.name} from your connections.`,
+          confirmText: 'Remove',
+          cancelText: 'Cancel',
+          type: 'danger',
+        });
+        if (!confirmed) return;
+        setProfile(prev => ({ ...prev, isFriend: false, isMyCloseFriend: false, isCloseFriend: false }));
+        await socialApi.post('/social/remove-friendship', { targetUserId: profile.id });
+        useSocialFeedStore.getState().handleFriendRequestRemoved({ userId: profile.id });
+        useSocialFeedStore.getState().removeSentRequest(profile.id);
+      } else {
+        setProfile(prev => ({ ...prev, hasPendingRequest: true, isRequestSender: true, isFriend: false }));
+        await socialApi.post('/social/friend-request', { receiverId: profile.id });
+        useSocialFeedStore.getState().addSentRequest(profile.id);
+      }
+    } catch (err) {
+      console.error('Friend action failed', err);
+      fetchProfile();
+    }
+  };
+
+  const handleToggleCloseFriend = async () => {
+    if (!profile?.id) return;
+    const isCurrentlyClose = Boolean(profile.isMyCloseFriend || profile.isCloseFriend);
+    const newStatus = !isCurrentlyClose;
+    
+    // Optimistic update
+    setProfile(prev => ({
+      ...prev,
+      isMyCloseFriend: newStatus,
+      isCloseFriend: newStatus
+    }));
+
+    useSocialFeedStore.setState(state => ({
+      friends: state.friends.map(f => Number(f.id) === Number(profile.id) ? { ...f, isCloseFriend: newStatus } : f),
+      closeFriends: newStatus
+        ? [...state.closeFriends.filter(f => Number(f.id) !== Number(profile.id)), { ...profile, isCloseFriend: true }]
+        : state.closeFriends.filter(f => Number(f.id) !== Number(profile.id))
+    }));
+
+    try {
+      const res = await socialApi.post('/social/toggle-close-friend', { friendId: profile.id });
+      const actualStatus = typeof res.data?.isCloseFriend === 'boolean' ? res.data.isCloseFriend : newStatus;
+      setProfile(prev => ({
+        ...prev,
+        isMyCloseFriend: actualStatus,
+        isCloseFriend: actualStatus
+      }));
+    } catch (err) {
+      console.error('Failed to toggle close friend:', err);
+      toast.error('Failed to update close friend status');
+      fetchProfile();
+    }
+  };
+
+  const handleRemoveFriendAction = async () => {
+    if (!profile?.id) return;
+    const confirmed = await confirm({
+      title: 'Remove Connection?',
+      message: `You'll remove ${profile.name} from your connections. They won't be notified.`,
+      confirmText: 'Remove',
+      cancelText: 'Cancel',
+      type: 'danger',
+    });
+    if (!confirmed) return;
+
+    try {
+      setProfile(prev => ({
+        ...prev,
+        isFriend: false,
+        isMyCloseFriend: false,
+        isCloseFriend: false,
+        hasPendingRequest: false,
+        isRequestSender: false
+      }));
+      useSocialFeedStore.setState(state => ({
+        friends: state.friends.filter(f => Number(f.id) !== Number(profile.id)),
+        closeFriends: state.closeFriends.filter(f => Number(f.id) !== Number(profile.id))
+      }));
+      useSocialFeedStore.getState().removeSentRequest(profile.id);
+      await socialApi.post('/social/remove-friendship', { targetUserId: profile.id });
+    } catch (err) {
+      console.error('Failed to remove connection:', err);
+      toast.error('Failed to remove connection');
+      fetchProfile();
+    }
+  };
+
+  const handleBlockUserAction = async () => {
+    if (!profile?.id) return;
+    const confirmed = await confirm({
+      title: `Block ${profile.name}?`,
+      message: `Are you sure you want to block ${profile.name}? They will be removed from your connections, and you will not see each other's posts, comments, or messages. You can unblock them anytime from Blocked Users.`,
+      confirmText: 'Block User',
+      cancelText: 'Cancel',
+      type: 'danger',
+    });
+    if (!confirmed) return;
+
+    const targetIdNum = Number(profile.id);
+    useSocialFeedStore.setState(state => ({
+      friends: state.friends.filter(f => Number(f.id) !== targetIdNum),
+      closeFriends: state.closeFriends.filter(f => Number(f.id) !== targetIdNum)
+    }));
+    useSocialFeedStore.getState().removeSentRequest(targetIdNum);
+
+    try {
+      await socialApi.post('/social/block', { targetUserId: targetIdNum });
+      toast.success(`${profile.name} has been blocked.`);
+      if (onBackToFeed) {
+        onBackToFeed();
+      } else {
+        navigate(-1);
+      }
+    } catch (err) {
+      console.error('Failed to block user:', err);
+      toast.error('Failed to block user');
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-24 text-gray-500 gap-3">
+        <div className="w-10 h-10 border-4 border-orange-500 border-t-transparent rounded-full animate-spin"></div>
+        <span className="text-xs font-bold text-gray-400">Loading profile...</span>
+      </div>
+    );
+  }
+
+  if (!profile) {
+    return (
+      <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 p-8 text-center text-gray-500 max-w-xl mx-auto my-12">
+        <p className="font-bold text-base text-gray-800 dark:text-gray-200">User Profile Not Found</p>
+        <button
+          onClick={() => navigate(-1)}
+          className="mt-4 px-4 py-2 bg-orange-500 text-white rounded-xl text-xs font-bold"
+        >
+          Go Back
+        </button>
+      </div>
+    );
+  }
+
+  const effectiveFriends = friendsList.length > 0 ? friendsList : storeFriends;
+  const postCount = posts.length || profile._count?.posts || 0;
+  const friendCount = effectiveFriends.length || profile._count?.friends || 0;
+  
+  // Clean headline & quote without fake predefined placeholders
+  const headline = profile.department 
+    ? `${profile.department}${profile.yearOfStudy ? ` • ${profile.yearOfStudy}` : ''}`
+    : (profile.collegeName || '');
+  const quoteText = (profile.bio || '').trim();
+
+  return (
+    <div className="w-full max-w-6xl mx-auto flex flex-col gap-6 pb-28 font-sans">
+      {/* ── Top Cover Banner ── */}
+      <div className="relative w-full h-44 sm:h-56 md:h-64 rounded-3xl shadow-sm border border-gray-200/70 dark:border-gray-800 bg-gray-900 group">
+        {/* Cover image wrapper with overflow-hidden to clip corners without cutting off dropdowns */}
+        <div className="absolute inset-0 rounded-3xl overflow-hidden pointer-events-none">
+          <img
+            src={resolveMediaUrl(profile?.coverImage) || PLATFORM_COVER_IMAGE}
+            alt={`${profile?.name || 'User'}'s Cover`}
+            className={`w-full h-full object-cover transition duration-300 ${
+              profile?.coverImage ? 'object-center' : 'object-[82%_center] sm:object-center'
+            }`}
+            onError={(e) => {
+              e.currentTarget.src = PLATFORM_COVER_IMAGE;
+            }}
+          />
+          <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-black/10 to-black/20 pointer-events-none" />
+        </div>
+
+        {/* Cover action controls (Only on own profile) */}
+        {isOwnProfile && (
+          <>
+            <input
+              type="file"
+              ref={coverInputRef}
+              onChange={handleCoverChange}
+              accept="image/*"
+              className="hidden"
+            />
+            <button
+              type="button"
+              onClick={() => coverInputRef.current?.click()}
+              className="absolute top-3 right-3 sm:top-4 sm:right-4 flex items-center gap-1.5 px-3 py-1.5 sm:px-3.5 sm:py-2 bg-black/60 hover:bg-black/80 backdrop-blur-md text-white text-xs font-bold rounded-xl border border-white/20 shadow-md transition active:scale-95 cursor-pointer z-10 outline-none focus:outline-none focus:ring-0 select-none"
+              title="Change cover image (visible to everyone)"
+            >
+              <Camera size={14} />
+              <span>Change Cover</span>
+            </button>
+          </>
+        )}
+
+        {!isOwnProfile && (
+          <>
+            <button
+              onClick={() => navigate(-1)}
+              className="absolute top-3 left-3 sm:top-4 sm:left-4 p-2 sm:p-2.5 bg-black/50 hover:bg-black/70 active:bg-black/80 backdrop-blur-md text-white rounded-xl border border-white/20 transition cursor-pointer z-10 flex items-center justify-center active:scale-95 shadow-sm outline-none focus:outline-none focus:ring-0 focus-visible:outline-none select-none"
+              title="Back"
+              aria-label="Back"
+            >
+              <ArrowLeft size={16} />
+            </button>
+
+            <div className="absolute top-3 right-3 sm:top-4 sm:right-4 z-40" ref={optionsMenuRef}>
+              <button
+                type="button"
+                onClick={() => setShowOptionsMenu(prev => !prev)}
+                className="p-2 sm:p-2.5 bg-black/50 hover:bg-black/70 active:bg-black/80 backdrop-blur-md text-white rounded-xl border border-white/20 transition cursor-pointer flex items-center justify-center active:scale-95 shadow-sm outline-none focus:outline-none focus:ring-0 focus-visible:outline-none select-none"
+                title="More options"
+                aria-label="More options"
+              >
+                <MoreVertical size={16} />
+              </button>
+
+              <AnimatePresence>
+                {showOptionsMenu && (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95, y: -4 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.95, y: -4 }}
+                    transition={{ duration: 0.15 }}
+                    className="absolute right-0 mt-2 w-56 bg-white dark:bg-gray-800 rounded-2xl shadow-2xl border border-gray-100 dark:border-gray-700 py-2 px-1.5 z-50 flex flex-col gap-0.5 select-none"
+                  >
+                    {/* View Profile */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowOptionsMenu(false);
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                      }}
+                      className="w-full text-left px-3.5 py-2.5 rounded-xl text-xs sm:text-[13px] font-semibold text-gray-700 dark:text-gray-200 hover:bg-orange-50 dark:hover:bg-gray-700 hover:text-orange-600 dark:hover:text-orange-400 transition flex items-center gap-3 cursor-pointer outline-none focus:outline-none"
+                    >
+                      <Eye size={16} className="text-gray-500 dark:text-gray-400 shrink-0" />
+                      <span>View Profile</span>
+                    </button>
+
+                    {/* Send Message (Only for connected friends) */}
+                    {profile?.isFriend && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowOptionsMenu(false);
+                          if (onSelectChatUser) {
+                            onSelectChatUser(profile);
+                          } else {
+                            navigate('/dashboard/social/messages');
+                          }
+                        }}
+                        className="w-full text-left px-3.5 py-2.5 rounded-xl text-xs sm:text-[13px] font-semibold text-gray-700 dark:text-gray-200 hover:bg-orange-50 dark:hover:bg-gray-700 hover:text-orange-600 dark:hover:text-orange-400 transition flex items-center gap-3 cursor-pointer outline-none focus:outline-none"
+                      >
+                        <MessageSquare size={16} className="text-gray-500 dark:text-gray-400 shrink-0" />
+                        <span>Send Message</span>
+                      </button>
+                    )}
+
+                    {/* Add to / Remove Close Friends */}
+                    {profile?.isFriend && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowOptionsMenu(false);
+                          handleToggleCloseFriend();
+                        }}
+                        className="w-full text-left px-3.5 py-2.5 rounded-xl text-xs sm:text-[13px] font-semibold text-gray-700 dark:text-gray-200 hover:bg-orange-50 dark:hover:bg-gray-700 hover:text-orange-600 dark:hover:text-orange-400 transition flex items-center gap-3 cursor-pointer outline-none focus:outline-none"
+                      >
+                        <Star size={16} className={`shrink-0 ${(profile?.isMyCloseFriend || profile?.isCloseFriend) ? 'fill-amber-400 text-amber-500' : 'text-gray-500 dark:text-gray-400'}`} />
+                        <span>{(profile?.isMyCloseFriend || profile?.isCloseFriend) ? 'Remove Close Friend' : 'Add to Close Friends'}</span>
+                      </button>
+                    )}
+
+                    <div className="border-t border-gray-100 dark:border-gray-700/80 my-1" />
+
+                    {/* Remove Connection (if friend) */}
+                    {profile?.isFriend && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowOptionsMenu(false);
+                          handleRemoveFriendAction();
+                        }}
+                        className="w-full text-left px-3.5 py-2.5 rounded-xl text-xs sm:text-[13px] font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition flex items-center gap-3 cursor-pointer outline-none focus:outline-none"
+                      >
+                        <UserX size={16} className="text-gray-500 dark:text-gray-400 shrink-0" />
+                        <span>Remove Connection</span>
+                      </button>
+                    )}
+
+                    {/* Block User */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowOptionsMenu(false);
+                        handleBlockUserAction();
+                      }}
+                      className="w-full text-left px-3.5 py-2.5 rounded-xl text-xs sm:text-[13px] font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition flex items-center gap-3 cursor-pointer outline-none focus:outline-none"
+                    >
+                      <Ban size={16} className="text-rose-500 shrink-0" />
+                      <span>Block User</span>
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* ── Main 2-Column Layout Grid ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start -mt-16 sm:-mt-20 px-2 sm:px-4">
+        
+        {/* ── LEFT COLUMN (Profile Card & Accordion Sections) ── */}
+        <div className="lg:col-span-5 xl:col-span-4 flex flex-col gap-4">
+          {/* Main User Card with Top-Right Corner Pencil Button */}
+          <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-200/80 dark:border-gray-700 p-5 sm:p-6 shadow-sm flex flex-col items-center text-center relative">
+            
+            {/* Top-Right Corner Edit Pencil Button (Only on own profile) */}
+            {isOwnProfile && (
+              <button
+                onClick={() => setIsEditing(true)}
+                className="absolute top-4 right-4 p-2 sm:p-2.5 rounded-2xl bg-orange-50 hover:bg-orange-100 dark:bg-gray-800 dark:hover:bg-gray-700 text-orange-600 dark:text-orange-400 border border-orange-200/80 dark:border-gray-700 shadow-2xs transition active:scale-95 cursor-pointer z-10"
+                title="Edit Profile"
+              >
+                <Edit3 size={16} />
+              </button>
+            )}
+
+            {/* Avatar overlapping banner with Lightbox Preview and Photo Upload Support */}
+            <div className="relative -mt-14 sm:-mt-16 mb-3 select-none group">
+              <div
+                onClick={() => {
+                  if (profile.profilePicture || profile.avatar) {
+                    setShowAvatarPreview(true);
+                  }
+                }}
+                className="cursor-pointer hover:scale-105 active:scale-95 transition-transform"
+                title="Click to preview photo"
+              >
+                <UserAvatar
+                  src={profile.profilePicture || profile.avatar}
+                  name={profile.name}
+                  className="w-24 h-24 sm:w-28 sm:h-28 rounded-full border-4 border-white dark:border-gray-800 shadow-lg text-4xl font-black object-cover"
+                  textClassName="text-3xl sm:text-4xl font-extrabold"
+                />
+              </div>
+
+              {isOnline && (
+                <div
+                  title="Online"
+                  className="absolute bottom-1 right-1 w-4 h-4 sm:w-5 sm:h-5 bg-emerald-500 border-2 sm:border-3 border-white dark:border-gray-800 rounded-full shadow-xs z-10 pointer-events-none"
+                />
+              )}
+
+              {/* Avatar Photo Upload Camera Trigger */}
+              {isOwnProfile && (
+                <label
+                  htmlFor="avatar-upload-trigger"
+                  title="Change Profile Photo"
+                  className="absolute bottom-0 left-0 p-1.5 sm:p-2 bg-gray-900/80 hover:bg-orange-600 text-white rounded-full border-2 border-white dark:border-gray-800 shadow-md transition active:scale-95 cursor-pointer z-10"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <Camera size={13} />
+                  <input
+                    id="avatar-upload-trigger"
+                    type="file"
+                    ref={avatarInputRef}
+                    onChange={handleAvatarChange}
+                    accept="image/*,.heic,.heif,.HEIC,.HEIF"
+                    className="hidden"
+                  />
+                </label>
+              )}
+            </div>
+
+            {/* Name */}
+            <h2 className="text-xl sm:text-2xl font-black text-gray-900 dark:text-white tracking-tight">
+              {profile.name}
+            </h2>
+
+            {/* Pro Prestige Badge */}
+            {((isOwnProfile && (user?.is_premium || user?.isPremium)) || profile.is_premium || profile.isPremium) && (
+              <div className="mt-1.5 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-gradient-to-r from-amber-500/15 via-orange-500/10 to-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-300/80 dark:border-amber-500/40 shadow-2xs">
+                <ProCrownIcon className="w-3.5 h-3.5 drop-shadow-xs" />
+                <span className="text-[11px] font-black tracking-wider uppercase bg-gradient-to-r from-amber-600 via-orange-600 to-amber-600 dark:from-amber-300 dark:via-orange-300 dark:to-amber-300 bg-clip-text text-transparent">
+                  PRO
+                </span>
+              </div>
+            )}
+
+            {/* Headline - only rendered when user actually has info */}
+            {headline ? (
+              <p className="text-xs sm:text-sm font-semibold text-gray-500 dark:text-gray-400 mt-0.5">
+                {headline}
+              </p>
+            ) : null}
+
+            {/* Bio / Quote - only rendered when user actually entered a bio */}
+            {quoteText ? (
+              <p className="text-xs text-gray-600 dark:text-gray-300 font-medium italic mt-2.5 px-3 leading-relaxed">
+                “{quoteText}”
+              </p>
+            ) : null}
+
+            {/* Action Buttons for other users' profiles */}
+            {!isOwnProfile && (
+              <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-700/80 flex items-center justify-center gap-2">
+                <button
+                  onClick={handleFriendAction}
+                  className={`inline-flex items-center justify-center gap-1.5 py-2 px-5 rounded-full font-bold text-xs transition cursor-pointer active:scale-95 shadow-xs hover:shadow-sm ${
+                    profile.isFriend
+                      ? 'border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-gray-800 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700'
+                      : profile.hasPendingRequest
+                        ? 'border border-orange-200 bg-orange-50 text-orange-600 dark:bg-orange-950/40 dark:border-orange-800 dark:text-orange-400'
+                        : 'bg-orange-500 hover:bg-orange-600 text-white'
+                  }`}
+                >
+                  {profile.isFriend ? (
+                    <><UserCheck size={14} /><span>Connected</span></>
+                  ) : profile.hasPendingRequest ? (
+                    <><Shield size={14} /><span>{profile.isRequestSender ? 'Request Sent' : 'Accept'}</span></>
+                  ) : (
+                    <><UserPlus size={14} /><span>Connect</span></>
+                  )}
+                </button>
+                {profile.isFriend && (
+                  <button
+                    onClick={() => onSelectChatUser && onSelectChatUser(profile)}
+                    className="inline-flex items-center justify-center gap-1.5 py-2 px-5 rounded-full bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs shadow-xs hover:shadow-sm transition cursor-pointer active:scale-95"
+                  >
+                    <MessageSquare size={14} />
+                    <span>Message</span>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* ── 3-col (other profile) or 2x2 (own profile) on Mobile, Vertical Stack on Laptop/Desktop ── */}
+          <div className={`${isOwnProfile ? 'grid grid-cols-2' : 'grid grid-cols-3'} lg:flex lg:flex-col gap-2 sm:gap-2.5 lg:gap-3`}>
+            {/* Card 1: Academics */}
+            <div
+              onClick={() => handleToggleSection('academics')}
+              className={`bg-white dark:bg-gray-800 rounded-2xl border transition cursor-pointer select-none ${
+                expandedSection === 'academics'
+                  ? 'border-orange-300 dark:border-orange-500/50 shadow-xs ring-1 ring-orange-500/20'
+                  : 'border-gray-200/80 dark:border-gray-700 hover:border-orange-200 shadow-2xs hover:shadow-xs'
+              } p-2.5 sm:p-3.5 lg:p-4 flex flex-col justify-between`}
+            >
+              <div className="flex items-start lg:items-center justify-between gap-1 sm:gap-2">
+                <div className="flex flex-col lg:flex-row lg:items-center gap-1.5 sm:gap-2.5 lg:gap-3.5 min-w-0">
+                  <div className="w-8 h-8 sm:w-9 sm:h-9 lg:w-10 lg:h-10 rounded-xl sm:rounded-2xl bg-orange-50 dark:bg-orange-950/30 text-orange-500 flex items-center justify-center border border-orange-100 dark:border-orange-900/30 shrink-0">
+                    <GraduationCap className="w-4 h-4 sm:w-4.5 sm:h-4.5 lg:w-[18px] lg:h-[18px]" />
+                  </div>
+                  <div className="min-w-0 text-left">
+                    <h4 className="font-extrabold text-[11px] sm:text-xs lg:text-sm text-gray-900 dark:text-white truncate">Academics</h4>
+                    <p className="text-[9px] sm:text-[10px] lg:text-[11px] text-gray-400 dark:text-gray-500 truncate mt-0.5">
+                      {profile.collegeName || 'College & year'}
+                    </p>
+                  </div>
+                </div>
+                <ChevronRight
+                  size={14}
+                  className={`text-orange-500 transition-transform duration-300 shrink-0 mt-1 lg:mt-0 ${
+                    expandedSection === 'academics' ? 'rotate-90' : ''
+                  }`}
+                />
+              </div>
+
+              {/* Desktop embedded accordion */}
+              <AnimatePresence>
+                {expandedSection === 'academics' && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="hidden lg:block overflow-hidden pt-3 mt-3 border-t border-gray-100 dark:border-gray-800 space-y-2 text-left"
+                  >
+                    <div className="bg-orange-50/40 dark:bg-gray-900 p-3 rounded-xl border border-orange-100/60 dark:border-gray-800">
+                      <span className="text-[10px] uppercase font-bold text-gray-400 block">College / University</span>
+                      <span className="text-xs font-bold text-gray-900 dark:text-white">{profile.collegeName || 'Not Set'}</span>
+                    </div>
+                    <div className="bg-orange-50/40 dark:bg-gray-900 p-3 rounded-xl border border-orange-100/60 dark:border-gray-800">
+                      <span className="text-[10px] uppercase font-bold text-gray-400 block">Major / Branch</span>
+                      <span className="text-xs font-bold text-gray-900 dark:text-white">{profile.department || 'Not Set'}</span>
+                    </div>
+                    <div className="bg-orange-50/40 dark:bg-gray-900 p-3 rounded-xl border border-orange-100/60 dark:border-gray-800">
+                      <span className="text-[10px] uppercase font-bold text-gray-400 block">Year of Study</span>
+                      <span className="text-xs font-bold text-gray-900 dark:text-white">{profile.yearOfStudy || 'Not Set'}</span>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {/* Card 2: Contact */}
+            <div
+              onClick={() => handleToggleSection('contact')}
+              className={`bg-white dark:bg-gray-800 rounded-2xl border transition cursor-pointer select-none ${
+                expandedSection === 'contact'
+                  ? 'border-orange-300 dark:border-orange-500/50 shadow-xs ring-1 ring-orange-500/20'
+                  : 'border-gray-200/80 dark:border-gray-700 hover:border-orange-200 shadow-2xs hover:shadow-xs'
+              } p-2.5 sm:p-3.5 lg:p-4 flex flex-col justify-between`}
+            >
+              <div className="flex items-start lg:items-center justify-between gap-1 sm:gap-2">
+                <div className="flex flex-col lg:flex-row lg:items-center gap-1.5 sm:gap-2.5 lg:gap-3.5 min-w-0">
+                  <div className="w-8 h-8 sm:w-9 sm:h-9 lg:w-10 lg:h-10 rounded-xl sm:rounded-2xl bg-orange-50 dark:bg-orange-950/30 text-orange-500 flex items-center justify-center border border-orange-100 dark:border-orange-900/30 shrink-0">
+                    <User className="w-4 h-4 sm:w-4.5 sm:h-4.5 lg:w-[18px] lg:h-[18px]" />
+                  </div>
+                  <div className="min-w-0 text-left">
+                    <h4 className="font-extrabold text-[11px] sm:text-xs lg:text-sm text-gray-900 dark:text-white truncate">Contact</h4>
+                    <p className="text-[9px] sm:text-[10px] lg:text-[11px] text-gray-400 dark:text-gray-500 truncate mt-0.5">
+                      {profile.phoneNumber || profile.email || 'Phone & email'}
+                    </p>
+                  </div>
+                </div>
+                <ChevronRight
+                  size={14}
+                  className={`text-orange-500 transition-transform duration-300 shrink-0 mt-1 lg:mt-0 ${
+                    expandedSection === 'contact' ? 'rotate-90' : ''
+                  }`}
+                />
+              </div>
+
+              {/* Desktop embedded accordion */}
+              <AnimatePresence>
+                {expandedSection === 'contact' && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="hidden lg:block overflow-hidden pt-3 mt-3 border-t border-gray-100 dark:border-gray-800 space-y-2.5 text-left"
+                  >
+                    {profile.phoneNumber ? (
+                      <a
+                        href={`tel:${profile.phoneNumber.replace(/\s+/g, '')}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="group bg-orange-50/40 dark:bg-gray-900 hover:bg-orange-100/50 dark:hover:bg-gray-800 p-3 rounded-xl border border-orange-100/60 hover:border-orange-300 dark:border-gray-800 dark:hover:border-gray-700 flex items-center justify-between gap-2 transition cursor-pointer"
+                        title="Click to call"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] uppercase font-bold text-gray-400 block">Phone Number</span>
+                            {isOwnProfile && <VisibilityBadge visibility={profile.phoneVisibility} />}
+                          </div>
+                          <span className="text-xs font-bold text-gray-900 dark:text-white group-hover:text-orange-600 dark:group-hover:text-orange-400 transition-colors truncate block">
+                            {profile.phoneNumber}
+                          </span>
+                        </div>
+                        <span className="p-2 bg-orange-500 hover:bg-orange-600 text-white rounded-xl shadow-xs shrink-0 group-hover:scale-105 transition-transform">
+                          <Phone size={13} />
+                        </span>
+                      </a>
+                    ) : (
+                      <div className="bg-orange-50/40 dark:bg-gray-900 p-3 rounded-xl border border-orange-100/60 dark:border-gray-800 flex items-center justify-between gap-2 opacity-60">
+                        <div className="min-w-0">
+                          <span className="text-[10px] uppercase font-bold text-gray-400 block">Phone Number</span>
+                          <span className="text-xs font-bold text-gray-500 dark:text-gray-400 truncate block">
+                            {isOwnProfile ? 'Not Set' : 'Private'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {profile.email ? (
+                      <a
+                        href={`mailto:${profile.email}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="group bg-orange-50/40 dark:bg-gray-900 hover:bg-orange-100/50 dark:hover:bg-gray-800 p-3 rounded-xl border border-orange-100/60 hover:border-orange-300 dark:border-gray-800 dark:hover:border-gray-700 flex items-center justify-between gap-2 transition cursor-pointer"
+                        title="Click to email"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] uppercase font-bold text-gray-400 block">Email Address</span>
+                            {isOwnProfile && <VisibilityBadge visibility={profile.emailVisibility} />}
+                          </div>
+                          <span className="text-xs font-bold text-gray-900 dark:text-white group-hover:text-orange-600 dark:group-hover:text-orange-400 transition-colors truncate max-w-[200px] block">
+                            {profile.email}
+                          </span>
+                        </div>
+                        <span className="p-2 bg-orange-500 hover:bg-orange-600 text-white rounded-xl shadow-xs shrink-0 group-hover:scale-105 transition-transform">
+                          <Mail size={13} />
+                        </span>
+                      </a>
+                    ) : (
+                      <div className="bg-orange-50/40 dark:bg-gray-900 p-3 rounded-xl border border-orange-100/60 dark:border-gray-800 flex items-center justify-between gap-2 opacity-60">
+                        <div className="min-w-0">
+                          <span className="text-[10px] uppercase font-bold text-gray-400 block">Email Address</span>
+                          <span className="text-xs font-bold text-gray-500 dark:text-gray-400 truncate block">
+                            {isOwnProfile ? 'Not Set' : 'Private'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {/* Card 3: Social Links */}
+            <div
+              onClick={() => handleToggleSection('social')}
+              className={`bg-white dark:bg-gray-800 rounded-2xl border transition cursor-pointer select-none ${
+                expandedSection === 'social'
+                  ? 'border-orange-300 dark:border-orange-500/50 shadow-xs ring-1 ring-orange-500/20'
+                  : 'border-gray-200/80 dark:border-gray-700 hover:border-orange-200 shadow-2xs hover:shadow-xs'
+              } p-2.5 sm:p-3.5 lg:p-4 flex flex-col justify-between`}
+            >
+              <div className="flex items-start lg:items-center justify-between gap-1 sm:gap-2">
+                <div className="flex flex-col lg:flex-row lg:items-center gap-1.5 sm:gap-2.5 lg:gap-3.5 min-w-0">
+                  <div className="w-8 h-8 sm:w-9 sm:h-9 lg:w-10 lg:h-10 rounded-xl sm:rounded-2xl bg-orange-50 dark:bg-orange-950/30 text-orange-500 flex items-center justify-center border border-orange-100 dark:border-orange-900/30 shrink-0">
+                    <Share2 className="w-4 h-4 sm:w-4.5 sm:h-4.5 lg:w-[18px] lg:h-[18px]" />
+                  </div>
+                  <div className="min-w-0 text-left">
+                    <h4 className="font-extrabold text-[11px] sm:text-xs lg:text-sm text-gray-900 dark:text-white truncate">Social Links</h4>
+                    <p className="text-[9px] sm:text-[10px] lg:text-[11px] text-gray-400 dark:text-gray-500 truncate mt-0.5">
+                      Social media
+                    </p>
+                  </div>
+                </div>
+                <ChevronRight
+                  size={14}
+                  className={`text-orange-500 transition-transform duration-300 shrink-0 mt-1 lg:mt-0 ${
+                    expandedSection === 'social' ? 'rotate-90' : ''
+                  }`}
+                />
+              </div>
+
+              {/* Desktop embedded accordion */}
+              <AnimatePresence>
+                {expandedSection === 'social' && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="hidden lg:block overflow-hidden pt-3 mt-3 border-t border-gray-100 dark:border-gray-800 space-y-2 text-left"
+                  >
+                    {[
+                      { label: 'Instagram', val: profile.instagramHandle, vis: profile.instagramVisibility, icon: Instagram, color: 'text-pink-500', type: 'instagram' },
+                      { label: 'LinkedIn', val: profile.linkedinUrl, vis: profile.linkedinVisibility, icon: Linkedin, color: 'text-blue-600', type: 'linkedin' },
+                      { label: 'WhatsApp', val: profile.whatsappNumber, vis: profile.whatsappVisibility, icon: MessageSquare, color: 'text-emerald-500', type: 'whatsapp' },
+                      { label: 'Facebook', val: profile.facebookUrl, vis: profile.facebookVisibility, icon: Facebook, color: 'text-indigo-600', type: 'facebook' }
+                    ].map((s) => {
+                      const link = getSocialLink(s.type, s.val);
+                      const isLinked = Boolean(link);
+                      return isLinked ? (
+                        <a
+                          key={s.label}
+                          href={link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="group bg-orange-50/40 dark:bg-gray-900 hover:bg-orange-100/50 dark:hover:bg-gray-800 p-2.5 rounded-xl border border-orange-100/60 hover:border-orange-300 dark:border-gray-800 dark:hover:border-gray-700 flex items-center justify-between text-xs gap-2 transition cursor-pointer"
+                          title={`Open ${s.label}`}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <s.icon size={15} className={`${s.color} shrink-0`} />
+                            <span className="font-bold text-gray-800 dark:text-gray-100 group-hover:text-orange-600 dark:group-hover:text-orange-400 truncate">
+                              {s.val}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {isOwnProfile && <VisibilityBadge visibility={s.vis} />}
+                            <span className="p-1 rounded-lg bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 group-hover:scale-110 transition-transform">
+                              <ExternalLink size={12} />
+                            </span>
+                          </div>
+                        </a>
+                      ) : (
+                        <div key={s.label} className="bg-orange-50/40 dark:bg-gray-900 p-2.5 rounded-xl border border-orange-100/60 dark:border-gray-800 flex items-center justify-between text-xs gap-2 opacity-60">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <s.icon size={15} className={`${s.color} shrink-0`} />
+                            <span className="font-bold text-gray-400 dark:text-gray-500 truncate">{s.val || 'Not Connected'}</span>
+                          </div>
+                          {isOwnProfile && <VisibilityBadge visibility={s.vis} />}
+                        </div>
+                      );
+                    })}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {/* Card 4: Account & Privacy Settings (Only for own profile) */}
+            {isOwnProfile && (
+              <div
+                onClick={() => handleToggleSection('settings')}
+                className={`bg-white dark:bg-gray-800 rounded-2xl border transition cursor-pointer select-none ${
+                  expandedSection === 'settings'
+                    ? 'border-orange-300 dark:border-orange-500/50 shadow-xs ring-1 ring-orange-500/20'
+                    : 'border-gray-200/80 dark:border-gray-700 hover:border-orange-200 shadow-2xs hover:shadow-xs'
+                } p-2.5 sm:p-3.5 lg:p-4 flex flex-col justify-between`}
+              >
+                <div className="flex items-start lg:items-center justify-between gap-1 sm:gap-2">
+                  <div className="flex flex-col lg:flex-row lg:items-center gap-1.5 sm:gap-2.5 lg:gap-3.5 min-w-0">
+                    <div className="w-8 h-8 sm:w-9 sm:h-9 lg:w-10 lg:h-10 rounded-xl sm:rounded-2xl bg-orange-50 dark:bg-orange-950/30 text-orange-500 flex items-center justify-center border border-orange-100 dark:border-orange-900/30 shrink-0">
+                      <Settings className="w-4 h-4 sm:w-4.5 sm:h-4.5 lg:w-[18px] lg:h-[18px]" />
+                    </div>
+                    <div className="min-w-0 text-left">
+                      <h4 className="font-extrabold text-[11px] sm:text-xs lg:text-sm text-gray-900 dark:text-white truncate">Account Settings</h4>
+                      <p className="text-[9px] sm:text-[10px] lg:text-[11px] text-gray-400 dark:text-gray-500 truncate mt-0.5">
+                        Privacy & visibility
+                      </p>
+                    </div>
+                  </div>
+                  <ChevronRight
+                    size={14}
+                    className={`text-orange-500 transition-transform duration-300 shrink-0 mt-1 lg:mt-0 ${
+                      expandedSection === 'settings' ? 'rotate-90' : ''
+                    }`}
+                  />
+                </div>
+
+                {/* Desktop embedded accordion */}
+                <AnimatePresence>
+                  {expandedSection === 'settings' && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className="hidden lg:block overflow-hidden pt-3 mt-3 border-t border-gray-100 dark:border-gray-800 space-y-3 text-left"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="flex items-center justify-between pb-1">
+                        <div>
+                          <h5 className="font-extrabold text-xs text-gray-900 dark:text-white">Quick Privacy & Visibility</h5>
+                          <p className="text-[10px] text-gray-400">Choose who can view your contact & social info</p>
+                        </div>
+                        <button
+                          onClick={() => setIsEditing(true)}
+                          className="px-2.5 py-1 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-[10px] font-bold transition cursor-pointer"
+                        >
+                          Edit All
+                        </button>
+                      </div>
+
+                      {[
+                        { key: 'phoneVisibility', label: 'Phone Number', current: profile.phoneVisibility || 'public' },
+                        { key: 'emailVisibility', label: 'Email Address', current: profile.emailVisibility || 'private' },
+                        { key: 'whatsappVisibility', label: 'WhatsApp', current: profile.whatsappVisibility || 'public' },
+                        { key: 'instagramVisibility', label: 'Instagram', current: profile.instagramVisibility || 'public' },
+                        { key: 'linkedinVisibility', label: 'LinkedIn', current: profile.linkedinVisibility || 'public' },
+                        { key: 'facebookVisibility', label: 'Facebook', current: profile.facebookVisibility || 'public' },
+                      ].map((item) => (
+                        <div key={item.key} className="bg-orange-50/40 dark:bg-gray-900 p-2.5 rounded-xl border border-orange-100/60 dark:border-gray-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <span className="text-xs font-bold text-gray-800 dark:text-gray-200">{item.label}</span>
+                          <VisibilityPill
+                            value={item.current}
+                            onChange={(newVal) => handleQuickVisibilityChange(item.key, newVal)}
+                          />
+                        </div>
+                      ))}
+
+                      <div className="pt-2 border-t border-gray-100 dark:border-gray-800">
+                        <button
+                          type="button"
+                          onClick={() => navigate('/delete-account')}
+                          className="w-full py-2 px-3 rounded-xl border border-red-200 dark:border-red-900/40 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/20 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <Trash2 size={13} />
+                          <span>Delete Account & Data</span>
+                        </button>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            )}
+          </div>
+
+          {/* ── Mobile-Only Expanded Detail Panel (Renders cleanly below 2x2 grid) ── */}
+          <AnimatePresence>
+            {expandedSection && (
+              <motion.div
+                ref={mobileExpandedPanelRef}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 8 }}
+                className="block lg:hidden bg-white dark:bg-gray-800 rounded-2xl border border-orange-200/90 dark:border-gray-700 p-4 shadow-sm text-left scroll-mt-24 mb-4"
+              >
+                <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 pb-2 mb-3">
+                  <h5 className="font-black text-xs uppercase tracking-wider text-orange-600 dark:text-orange-400">
+                    {expandedSection === 'academics' && 'Academic Details'}
+                    {expandedSection === 'contact' && 'Contact Information'}
+                    {expandedSection === 'social' && 'Social Media Accounts'}
+                    {expandedSection === 'settings' && 'Privacy & Visibility'}
+                  </h5>
+                  <button
+                    onClick={() => setExpandedSection(null)}
+                    className="p-1 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 cursor-pointer"
+                  >
+                    <X size={15} />
+                  </button>
+                </div>
+
+                {expandedSection === 'academics' && (
+                  <div className="space-y-2">
+                    <div className="bg-orange-50/40 dark:bg-gray-900 p-2.5 rounded-xl border border-orange-100/60 dark:border-gray-800">
+                      <span className="text-[10px] uppercase font-bold text-gray-400 block">College / University</span>
+                      <span className="text-xs font-bold text-gray-900 dark:text-white">{profile.collegeName || 'Not Set'}</span>
+                    </div>
+                    <div className="bg-orange-50/40 dark:bg-gray-900 p-2.5 rounded-xl border border-orange-100/60 dark:border-gray-800">
+                      <span className="text-[10px] uppercase font-bold text-gray-400 block">Major / Branch</span>
+                      <span className="text-xs font-bold text-gray-900 dark:text-white">{profile.department || 'Not Set'}</span>
+                    </div>
+                    <div className="bg-orange-50/40 dark:bg-gray-900 p-2.5 rounded-xl border border-orange-100/60 dark:border-gray-800">
+                      <span className="text-[10px] uppercase font-bold text-gray-400 block">Year of Study</span>
+                      <span className="text-xs font-bold text-gray-900 dark:text-white">{profile.yearOfStudy || 'Not Set'}</span>
+                    </div>
+                  </div>
+                )}
+
+                {expandedSection === 'contact' && (
+                  <div className="space-y-2">
+                    {profile.phoneNumber ? (
+                      <a
+                        href={`tel:${profile.phoneNumber.replace(/\s+/g, '')}`}
+                        className="group bg-orange-50/40 dark:bg-gray-900 hover:bg-orange-100/50 dark:hover:bg-gray-800 p-2.5 rounded-xl border border-orange-100/60 hover:border-orange-300 dark:border-gray-800 dark:hover:border-gray-700 flex items-center justify-between gap-2 transition cursor-pointer"
+                        title="Click to call"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] uppercase font-bold text-gray-400 block">Phone</span>
+                            {isOwnProfile && <VisibilityBadge visibility={profile.phoneVisibility} />}
+                          </div>
+                          <span className="text-xs font-bold text-gray-900 dark:text-white group-hover:text-orange-600 dark:group-hover:text-orange-400 transition-colors truncate block">
+                            {profile.phoneNumber}
+                          </span>
+                        </div>
+                        <span className="p-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded-xl shadow-xs shrink-0 group-hover:scale-105 transition-transform">
+                          <Phone size={12} />
+                        </span>
+                      </a>
+                    ) : (
+                      <div className="bg-orange-50/40 dark:bg-gray-900 p-2.5 rounded-xl border border-orange-100/60 dark:border-gray-800 flex items-center justify-between gap-2 opacity-60">
+                        <div className="min-w-0">
+                          <span className="text-[10px] uppercase font-bold text-gray-400 block">Phone</span>
+                          <span className="text-xs font-bold text-gray-500 dark:text-gray-400 truncate block">
+                            {isOwnProfile ? 'Not Set' : 'Private'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {profile.email ? (
+                      <a
+                        href={`mailto:${profile.email}`}
+                        className="group bg-orange-50/40 dark:bg-gray-900 hover:bg-orange-100/50 dark:hover:bg-gray-800 p-2.5 rounded-xl border border-orange-100/60 hover:border-orange-300 dark:border-gray-800 dark:hover:border-gray-700 flex items-center justify-between gap-2 transition cursor-pointer"
+                        title="Click to email"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] uppercase font-bold text-gray-400 block">Email</span>
+                            {isOwnProfile && <VisibilityBadge visibility={profile.emailVisibility} />}
+                          </div>
+                          <span className="text-xs font-bold text-gray-900 dark:text-white group-hover:text-orange-600 dark:group-hover:text-orange-400 transition-colors truncate block">
+                            {profile.email}
+                          </span>
+                        </div>
+                        <span className="p-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded-xl shadow-xs shrink-0 group-hover:scale-105 transition-transform">
+                          <Mail size={12} />
+                        </span>
+                      </a>
+                    ) : (
+                      <div className="bg-orange-50/40 dark:bg-gray-900 p-2.5 rounded-xl border border-orange-100/60 dark:border-gray-800 flex items-center justify-between gap-2 opacity-60">
+                        <div className="min-w-0">
+                          <span className="text-[10px] uppercase font-bold text-gray-400 block">Email</span>
+                          <span className="text-xs font-bold text-gray-500 dark:text-gray-400 truncate block">
+                            {isOwnProfile ? 'Not Set' : 'Private'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {expandedSection === 'social' && (
+                  <div className="space-y-2">
+                    {[
+                      { label: 'Instagram', val: profile.instagramHandle, vis: profile.instagramVisibility, icon: Instagram, color: 'text-pink-500', type: 'instagram' },
+                      { label: 'LinkedIn', val: profile.linkedinUrl, vis: profile.linkedinVisibility, icon: Linkedin, color: 'text-blue-600', type: 'linkedin' },
+                      { label: 'WhatsApp', val: profile.whatsappNumber, vis: profile.whatsappVisibility, icon: MessageSquare, color: 'text-emerald-500', type: 'whatsapp' },
+                      { label: 'Facebook', val: profile.facebookUrl, vis: profile.facebookVisibility, icon: Facebook, color: 'text-indigo-600', type: 'facebook' }
+                    ].map((s) => {
+                      const link = getSocialLink(s.type, s.val);
+                      const isLinked = Boolean(link);
+                      return isLinked ? (
+                        <a
+                          key={s.label}
+                          href={link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="group bg-orange-50/40 dark:bg-gray-900 hover:bg-orange-100/50 dark:hover:bg-gray-800 p-2.5 rounded-xl border border-orange-100/60 hover:border-orange-300 dark:border-gray-800 dark:hover:border-gray-700 flex items-center justify-between text-xs gap-2 transition cursor-pointer active:scale-[0.99]"
+                          title={`Open ${s.label}`}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <s.icon size={15} className={`${s.color} shrink-0`} />
+                            <span className="font-bold text-gray-800 dark:text-gray-100 group-hover:text-orange-600 dark:group-hover:text-orange-400 truncate">
+                              {s.val}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {isOwnProfile && <VisibilityBadge visibility={s.vis} />}
+                            <span className="p-1 rounded-lg bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 group-hover:scale-110 transition-transform">
+                              <ExternalLink size={12} />
+                            </span>
+                          </div>
+                        </a>
+                      ) : (
+                        <div
+                          key={s.label}
+                          className="bg-orange-50/40 dark:bg-gray-900 p-2.5 rounded-xl border border-orange-100/60 dark:border-gray-800 flex items-center justify-between text-xs gap-2 opacity-60"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <s.icon size={15} className={`${s.color} shrink-0`} />
+                            <span className="font-bold text-gray-400 dark:text-gray-500 truncate">
+                              {s.val || 'Not Connected'}
+                            </span>
+                          </div>
+                          {isOwnProfile && <VisibilityBadge visibility={s.vis} />}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {expandedSection === 'settings' && isOwnProfile && (
+                  <div className="space-y-2.5" onClick={(e) => e.stopPropagation()}>
+                    {[
+                      { key: 'phoneVisibility', label: 'Phone', current: profile.phoneVisibility || 'public' },
+                      { key: 'emailVisibility', label: 'Email', current: profile.emailVisibility || 'private' },
+                      { key: 'whatsappVisibility', label: 'WhatsApp', current: profile.whatsappVisibility || 'public' },
+                      { key: 'instagramVisibility', label: 'Instagram', current: profile.instagramVisibility || 'public' },
+                      { key: 'linkedinVisibility', label: 'LinkedIn', current: profile.linkedinVisibility || 'public' },
+                      { key: 'facebookVisibility', label: 'Facebook', current: profile.facebookVisibility || 'public' },
+                    ].map((item) => (
+                      <div key={item.key} className="bg-orange-50/40 dark:bg-gray-900 p-2 rounded-xl border border-orange-100/60 dark:border-gray-800 flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-gray-800 dark:text-gray-200">{item.label}</span>
+                        <VisibilityPill
+                          value={item.current}
+                          onChange={(newVal) => handleQuickVisibilityChange(item.key, newVal)}
+                        />
+                      </div>
+                    ))}
+
+                    <div className="pt-2 border-t border-gray-100 dark:border-gray-800">
+                      <button
+                        type="button"
+                        onClick={() => navigate('/delete-account')}
+                        className="w-full py-2 px-3 rounded-xl border border-red-200 dark:border-red-900/40 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/20 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Trash2 size={13} />
+                        <span>Delete Account & Data</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* ── RIGHT COLUMN (Tab Navigation & Feed Stream) ── */}
+        <div className="lg:col-span-7 xl:col-span-8 flex flex-col gap-4">
+          {/* Top Activity Tab Strip - Clean Underline Style matching Reference UI */}
+          <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200/80 dark:border-gray-700 px-4 sm:px-6 shadow-2xs flex items-center justify-around sm:justify-start gap-4 sm:gap-8">
+            <button
+              onClick={() => setActiveTab('posts')}
+              className={`flex items-center gap-2 py-3.5 sm:py-4 border-b-2 font-black text-xs sm:text-sm transition-all cursor-pointer ${
+                activeTab === 'posts'
+                  ? 'border-orange-500 text-orange-600 dark:text-orange-400'
+                  : 'border-transparent text-gray-500 hover:text-gray-800 dark:hover:text-gray-200'
+              }`}
+            >
+              <FileText size={17} className={activeTab === 'posts' ? 'text-orange-500' : 'text-gray-400'} />
+              <span>Posts</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+                activeTab === 'posts'
+                  ? 'bg-orange-100 text-orange-700 dark:bg-orange-950/60 dark:text-orange-300'
+                  : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400'
+              }`}>
+                {postCount}
+              </span>
+            </button>
+
+            {isOwnProfile && (
+              <button
+                onClick={() => {
+                  setActiveTab('activity');
+                  fetchActivityData(activitySubTab);
+                }}
+                className={`flex items-center gap-2 py-3.5 sm:py-4 border-b-2 font-black text-xs sm:text-sm transition-all cursor-pointer ${
+                  activeTab === 'activity'
+                    ? 'border-orange-500 text-orange-600 dark:text-orange-400'
+                    : 'border-transparent text-gray-500 hover:text-gray-800 dark:hover:text-gray-200'
+                }`}
+              >
+                <Activity size={17} className={activeTab === 'activity' ? 'text-orange-500' : 'text-gray-400'} />
+                <span>Activity</span>
+                {(activityCounts.totalCount > 0 || (likedPosts.length + commentedPosts.length + savedPosts.length) > 0) && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+                    activeTab === 'activity'
+                      ? 'bg-orange-100 text-orange-700 dark:bg-orange-950/60 dark:text-orange-300'
+                      : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400'
+                  }`}>
+                    {activityCounts.totalCount || (likedPosts.length + commentedPosts.length + savedPosts.length)}
+                  </span>
+                )}
+              </button>
+            )}
+
+            {isOwnProfile && (
+              <button
+                onClick={() => setActiveTab('friends')}
+                className={`flex items-center gap-2 py-3.5 sm:py-4 border-b-2 font-black text-xs sm:text-sm transition-all cursor-pointer ${
+                  activeTab === 'friends'
+                    ? 'border-orange-500 text-orange-600 dark:text-orange-400'
+                    : 'border-transparent text-gray-500 hover:text-gray-800 dark:hover:text-gray-200'
+                }`}
+              >
+                <UsersIcon size={17} className={activeTab === 'friends' ? 'text-orange-500' : 'text-gray-400'} />
+                <span>Friends</span>
+                {friendCount > 0 && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+                    activeTab === 'friends'
+                      ? 'bg-orange-100 text-orange-700 dark:bg-orange-950/60 dark:text-orange-300'
+                      : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400'
+                  }`}>
+                    {friendCount}
+                  </span>
+                )}
+              </button>
+            )}
+          </div>
+
+          {/* ── Tab Content ── */}
+          {activeTab === 'posts' && (
+            <div className="flex flex-col gap-4">
+              {postsLoading ? (
+                <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-200/80 dark:border-gray-700 p-12 text-center text-gray-400">
+                  <div className="w-8 h-8 border-3 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
+                  <p className="text-xs font-bold">Loading posts...</p>
+                </div>
+              ) : posts.length > 0 ? (
+                posts.map((post) => (
+                  <SocialPostCard
+                    key={post.id}
+                    post={post}
+                    onLike={handlePostLike}
+                    onSave={handlePostSave}
+                    currentUserId={effectiveCurrentUserId}
+                    onViewProfile={onViewProfile}
+                    onTagClick={(tag) => {
+                      setSelectedTag(tag);
+                      navigate('/dashboard/social/feed');
+                    }}
+                  />
+                ))
+              ) : (
+                /* Empty Posts State */
+                <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-200/80 dark:border-gray-700 p-8 sm:p-12 flex flex-col items-center justify-center text-center shadow-2xs space-y-4">
+                  <div className="relative w-24 h-24 flex items-center justify-center">
+                    <div className="w-16 h-20 bg-slate-100 dark:bg-gray-700 rounded-2xl border border-slate-200 dark:border-gray-700 flex flex-col p-2.5 gap-1.5 shadow-xs rotate-[-8deg]">
+                      <div className="w-7 h-1.5 bg-slate-300 dark:bg-gray-600 rounded-full" />
+                      <div className="w-10 h-1.5 bg-slate-200 dark:bg-gray-600 rounded-full" />
+                      <div className="w-8 h-1.5 bg-slate-200 dark:bg-gray-600 rounded-full" />
+                    </div>
+                    <div className="absolute right-2 bottom-1 w-14 h-14 bg-gradient-to-br from-orange-400 to-amber-500 rounded-2xl flex items-center justify-center text-white shadow-md shadow-orange-500/25 rotate-[12deg]">
+                      <Camera size={24} />
+                    </div>
+                    <Sparkles size={16} className="absolute -top-1 right-2 text-amber-400 animate-bounce" />
+                    <Sparkles size={12} className="absolute bottom-2 -left-1 text-orange-400" />
+                  </div>
+
+                  <div>
+                    <h3 className="text-lg sm:text-xl font-black text-gray-900 dark:text-white">
+                      No posts yet
+                    </h3>
+                    <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 max-w-sm mt-1 leading-relaxed">
+                      Share your thoughts, ideas, achievements or moments with the LearnProof community.
+                    </p>
+                  </div>
+
+                  {isOwnProfile && (
+                    <button
+                      onClick={() => {
+                        if (onCreatePost) onCreatePost();
+                        else if (onBackToFeed) onBackToFeed();
+                      }}
+                      className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-extrabold text-xs sm:text-sm rounded-2xl shadow-lg shadow-orange-500/20 active:scale-95 transition cursor-pointer"
+                    >
+                      <Plus size={16} />
+                      <span>Create Your First Post</span>
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Bottom Quote Banner */}
+              <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200/80 dark:border-gray-700 p-4 sm:p-5 flex items-center gap-4 shadow-2xs">
+                <div className="w-10 h-10 rounded-2xl bg-amber-50 dark:bg-amber-950/30 text-amber-500 flex items-center justify-center border border-amber-200 dark:border-amber-900/30 shrink-0">
+                  <Lightbulb size={20} />
+                </div>
+                <div className="text-left">
+                  <h5 className="font-extrabold text-xs sm:text-sm text-gray-900 dark:text-white">
+                    Every expert was once a beginner.
+                  </h5>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                    Share your journey and inspire others!
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {isOwnProfile && activeTab === 'activity' && (
+            <div className="flex flex-col gap-4">
+              {/* Activity Sub-Tabs (Liked, Commented, Saved) */}
+              <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200/80 dark:border-gray-700 p-1.5 flex items-center gap-1.5 shadow-2xs">
+                <button
+                  onClick={() => {
+                    setActivitySubTab('liked');
+                    fetchLikedPosts();
+                  }}
+                  className={`flex-1 flex items-center justify-center gap-1.5 sm:gap-2 py-2 px-2 sm:px-3 rounded-xl font-bold text-xs sm:text-sm transition-all cursor-pointer ${
+                    activitySubTab === 'liked'
+                      ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-sm shadow-orange-500/20'
+                      : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                  }`}
+                >
+                  <Heart size={15} fill={activitySubTab === 'liked' ? 'currentColor' : 'transparent'} />
+                  <span>Liked</span>
+                  {(likedPosts.length > 0 || activityCounts.likedCount > 0) && (
+                    <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-extrabold ${
+                      activitySubTab === 'liked' ? 'bg-white/25 text-white' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+                    }`}>
+                      {likedPosts.length || activityCounts.likedCount}
+                    </span>
+                  )}
+                </button>
+
+                <button
+                  onClick={() => {
+                    setActivitySubTab('commented');
+                    fetchCommentedPosts();
+                  }}
+                  className={`flex-1 flex items-center justify-center gap-1.5 sm:gap-2 py-2 px-2 sm:px-3 rounded-xl font-bold text-xs sm:text-sm transition-all cursor-pointer ${
+                    activitySubTab === 'commented'
+                      ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-sm shadow-orange-500/20'
+                      : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                  }`}
+                >
+                  <MessageCircle size={15} fill={activitySubTab === 'commented' ? 'currentColor' : 'transparent'} />
+                  <span>Commented</span>
+                  {(commentedPosts.length > 0 || activityCounts.commentedCount > 0) && (
+                    <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-extrabold ${
+                      activitySubTab === 'commented' ? 'bg-white/25 text-white' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+                    }`}>
+                      {commentedPosts.length || activityCounts.commentedCount}
+                    </span>
+                  )}
+                </button>
+
+                <button
+                  onClick={() => {
+                    setActivitySubTab('saved');
+                    fetchSavedPosts();
+                  }}
+                  className={`flex-1 flex items-center justify-center gap-1.5 sm:gap-2 py-2 px-2 sm:px-3 rounded-xl font-bold text-xs sm:text-sm transition-all cursor-pointer ${
+                    activitySubTab === 'saved'
+                      ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-sm shadow-orange-500/20'
+                      : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                  }`}
+                >
+                  <Bookmark size={15} fill={activitySubTab === 'saved' ? 'currentColor' : 'transparent'} />
+                  <span>Saved</span>
+                  {(savedPosts.length > 0 || activityCounts.savedCount > 0) && (
+                    <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-extrabold ${
+                      activitySubTab === 'saved' ? 'bg-white/25 text-white' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+                    }`}>
+                      {savedPosts.length || activityCounts.savedCount}
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              {/* Sub-Tab Stream Content */}
+              {activitySubTab === 'liked' && (
+                likedPostsLoading ? (
+                  <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-200/80 dark:border-gray-700 p-12 text-center text-gray-400">
+                    <div className="w-8 h-8 border-3 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
+                    <p className="text-xs font-bold">Loading liked posts...</p>
+                  </div>
+                ) : likedPosts.length > 0 ? (
+                  likedPosts.map((post) => (
+                    <SocialPostCard
+                      key={post.id}
+                      post={post}
+                      onLike={handlePostLike}
+                      onSave={handlePostSave}
+                      currentUserId={effectiveCurrentUserId}
+                      onViewProfile={onViewProfile}
+                      onTagClick={(tag) => {
+                        setSelectedTag(tag);
+                        navigate('/dashboard/social/feed');
+                      }}
+                    />
+                  ))
+                ) : (
+                  <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-200/80 dark:border-gray-700 p-8 sm:p-12 text-center text-gray-500 space-y-3">
+                    <div className="w-12 h-12 rounded-2xl bg-rose-50 dark:bg-rose-950/30 text-rose-500 flex items-center justify-center mx-auto border border-rose-100 dark:border-rose-900/30">
+                      <Heart size={24} />
+                    </div>
+                    <h4 className="font-black text-base text-gray-900 dark:text-white">No Liked Posts Yet</h4>
+                    <p className="text-xs text-gray-400 max-w-sm mx-auto">Posts you like on the Social Hub feed will appear here.</p>
+                  </div>
+                )
+              )}
+
+              {activitySubTab === 'commented' && (
+                commentedPostsLoading ? (
+                  <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-200/80 dark:border-gray-700 p-12 text-center text-gray-400">
+                    <div className="w-8 h-8 border-3 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
+                    <p className="text-xs font-bold">Loading commented posts...</p>
+                  </div>
+                ) : commentedPosts.length > 0 ? (
+                  commentedPosts.map((post) => (
+                    <SocialPostCard
+                      key={post.id}
+                      post={post}
+                      onLike={handlePostLike}
+                      onSave={handlePostSave}
+                      currentUserId={effectiveCurrentUserId}
+                      onViewProfile={onViewProfile}
+                      onTagClick={(tag) => {
+                        setSelectedTag(tag);
+                        navigate('/dashboard/social/feed');
+                      }}
+                    />
+                  ))
+                ) : (
+                  <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-200/80 dark:border-gray-700 p-8 sm:p-12 text-center text-gray-500 space-y-3">
+                    <div className="w-12 h-12 rounded-2xl bg-blue-50 dark:bg-blue-950/30 text-blue-500 flex items-center justify-center mx-auto border border-blue-100 dark:border-blue-900/30">
+                      <MessageCircle size={24} />
+                    </div>
+                    <h4 className="font-black text-base text-gray-900 dark:text-white">No Commented Posts Yet</h4>
+                    <p className="text-xs text-gray-400 max-w-sm mx-auto">Discussions and posts you contribute comments to will appear here.</p>
+                  </div>
+                )
+              )}
+
+              {activitySubTab === 'saved' && (
+                savedPostsLoading ? (
+                  <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-200/80 dark:border-gray-700 p-12 text-center text-gray-400">
+                    <div className="w-8 h-8 border-3 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
+                    <p className="text-xs font-bold">Loading saved posts...</p>
+                  </div>
+                ) : savedPosts.length > 0 ? (
+                  savedPosts.map((post) => (
+                    <SocialPostCard
+                      key={post.id}
+                      post={post}
+                      onLike={handlePostLike}
+                      onSave={handlePostSave}
+                      currentUserId={effectiveCurrentUserId}
+                      onViewProfile={onViewProfile}
+                      onTagClick={(tag) => {
+                        setSelectedTag(tag);
+                        navigate('/dashboard/social/feed');
+                      }}
+                    />
+                  ))
+                ) : (
+                  <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-200/80 dark:border-gray-700 p-8 sm:p-12 text-center text-gray-500 space-y-3">
+                    <div className="w-12 h-12 rounded-2xl bg-amber-50 dark:bg-amber-950/30 text-amber-500 flex items-center justify-center mx-auto border border-amber-100 dark:border-amber-900/30">
+                      <Bookmark size={24} />
+                    </div>
+                    <h4 className="font-black text-base text-gray-900 dark:text-white">No Saved Posts Yet</h4>
+                    <p className="text-xs text-gray-400 max-w-sm mx-auto">Posts you bookmark or save for later will appear here.</p>
+                  </div>
+                )
+              )}
+            </div>
+          )}
+
+          {isOwnProfile && activeTab === 'friends' && (
+            <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-200/80 dark:border-gray-700 p-5 sm:p-6 space-y-4">
+              <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 pb-3">
+                <h4 className="font-black text-sm text-gray-900 dark:text-white flex items-center gap-2">
+                  <UsersIcon size={16} className="text-orange-500" />
+                  <span>Connections & Friends ({friendCount})</span>
+                </h4>
+              </div>
+
+              {effectiveFriends.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {effectiveFriends.map((f, idx) => {
+                    const friendUser = f.friend || f;
+                    const isFriendOnline = onlineUserIds instanceof Set 
+                      ? onlineUserIds.has(friendUser.id) 
+                      : Array.isArray(onlineUserIds) 
+                        ? onlineUserIds.includes(friendUser.id) 
+                        : false;
+                    return (
+                      <div key={idx} className="flex items-center justify-between p-3 rounded-2xl bg-orange-50/30 dark:bg-gray-900 border border-orange-100 dark:border-gray-800 hover:border-orange-200 transition">
+                        <div 
+                          onClick={() => onViewProfile && onViewProfile(friendUser.id)}
+                          className="flex items-center gap-3 min-w-0 cursor-pointer"
+                        >
+                          <div className="relative shrink-0">
+                            <UserAvatar
+                              src={friendUser.avatar || friendUser.profilePicture}
+                              name={friendUser.name}
+                              className="w-10 h-10 rounded-full border border-orange-200 shrink-0 object-cover"
+                              textClassName="text-sm font-bold"
+                            />
+                            {isFriendOnline && (
+                              <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-500 border-2 border-white dark:border-gray-900 rounded-full" />
+                            )}
+                          </div>
+                          <div className="min-w-0 text-left">
+                            <p className="font-extrabold text-xs text-gray-900 dark:text-white truncate hover:text-orange-500 transition-colors">{friendUser.name}</p>
+                            <p className="text-[10px] text-gray-400 truncate">{friendUser.collegeName || friendUser.department || ''}</p>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => onSelectChatUser && onSelectChatUser(friendUser)}
+                          className="p-2 bg-orange-500 hover:bg-orange-600 text-white rounded-xl text-xs font-bold transition shrink-0 cursor-pointer active:scale-95 shadow-2xs"
+                          title="Message Friend"
+                        >
+                          <MessageSquare size={13} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="py-8 text-center text-gray-400 text-xs">
+                  No friends connected yet. Connect with students in Discover or Live Study Rooms!
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Edit Profile Modal with Full Visibility & Photo Upload Controls ── */}
+      {isEditing && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[99999] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-0 sm:p-4 overflow-hidden">
+          {/* Backdrop Click */}
+          <div 
+            className="absolute inset-0" 
+            onClick={() => setIsEditing(false)} 
+          />
+
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className="relative bg-white dark:bg-gray-800 w-full sm:max-w-xl flex flex-col h-[94vh] sm:h-auto sm:max-h-[88vh] rounded-t-[28px] sm:rounded-3xl shadow-2xl border-t sm:border border-orange-100/80 dark:border-gray-700/80 overflow-hidden z-10 animate-fade-in"
+          >
+            {/* Mobile Sheet Handle Bar */}
+            <div className="pt-2.5 pb-1 flex justify-center sm:hidden shrink-0">
+              <div className="w-10 h-1 bg-gray-300 dark:bg-gray-600 rounded-full" />
+            </div>
+
+            {/* Sticky Modal Header */}
+            <div className="px-4 py-3 sm:px-6 sm:py-4 border-b border-gray-100 dark:border-gray-700/80 flex items-center justify-between bg-white dark:bg-gray-800 shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-orange-50 dark:bg-orange-950/40 text-orange-500 flex items-center justify-center border border-orange-100 dark:border-orange-900/30">
+                  <Edit3 size={17} />
+                </div>
+                <div>
+                  <h3 className="text-sm sm:text-base font-black text-gray-900 dark:text-white leading-tight">
+                    Edit Profile & Privacy
+                  </h3>
+                  <p className="text-[11px] text-gray-400 font-medium">
+                    Customize your details and visibility
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEditing(false)}
+                className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700/60 transition cursor-pointer"
+                title="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Scrollable Form Body */}
+            <form id="edit-profile-form" onSubmit={handleSave} className="px-4 py-4 sm:px-6 sm:py-5 overflow-y-auto space-y-5 flex-1 custom-scrollbar text-left pb-32">
+              {/* Profile Photo Upload inside Edit Modal */}
+              <div className="p-3 sm:p-4 bg-gradient-to-r from-orange-50/60 via-amber-50/30 to-transparent dark:from-gray-900/90 dark:to-gray-900/40 rounded-2xl border border-orange-100/80 dark:border-gray-700/80 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 sm:gap-3.5 min-w-0">
+                  <div className="relative shrink-0">
+                    <UserAvatar
+                      src={formData.profilePicture || profile.profilePicture || profile.avatar}
+                      name={formData.name || profile.name}
+                      className="w-16 h-16 sm:w-18 sm:h-18 rounded-full border-2 border-orange-400/80 dark:border-orange-500/70 shadow-md object-cover"
+                      textClassName="text-xl sm:text-2xl font-bold"
+                    />
+                    <div className="absolute -bottom-0.5 -right-0.5 w-6 h-6 rounded-full bg-orange-500 text-white flex items-center justify-center shadow-xs border-2 border-white dark:border-gray-800">
+                      <Camera size={12} />
+                    </div>
+                  </div>
+                  <div className="min-w-0">
+                    <h5 className="text-sm font-bold text-gray-900 dark:text-white">Profile Photo</h5>
+                  </div>
+                </div>
+
+                <label
+                  htmlFor="modal-avatar-upload-trigger"
+                  className="px-3 py-1.5 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-xs active:scale-95 cursor-pointer shrink-0"
+                >
+                  <Camera size={13} />
+                  <span>Change Photo</span>
+                  <input
+                    id="modal-avatar-upload-trigger"
+                    type="file"
+                    ref={modalAvatarInputRef}
+                    onChange={handleAvatarChange}
+                    accept="image/*,.heic,.heif,.HEIC,.HEIF"
+                    className="hidden"
+                  />
+                </label>
+              </div>
+
+              {/* Basic Academic Info */}
+              <div className="space-y-3.5">
+                <h4 className="text-[11px] font-black uppercase text-gray-400 dark:text-gray-500 tracking-wider">
+                  Basic Information
+                </h4>
+
+                <div>
+                  <label className="block text-[11px] font-extrabold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-1">
+                    Display Name <span className="text-orange-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={formData.name || ''}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    className="w-full px-3.5 py-2.5 bg-gray-50/80 dark:bg-gray-900/80 border border-gray-200 dark:border-gray-700 rounded-xl text-sm font-semibold text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+                  <div>
+                    <label className="block text-[11px] font-extrabold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-1">
+                      College / University
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Stanford University"
+                      value={formData.collegeName || ''}
+                      onChange={(e) => setFormData({ ...formData, collegeName: e.target.value })}
+                      className="w-full px-3.5 py-2.5 bg-gray-50/80 dark:bg-gray-900/80 border border-gray-200 dark:border-gray-700 rounded-xl text-xs sm:text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-extrabold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-1">
+                      Major / Department
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Computer Science"
+                      value={formData.department || ''}
+                      onChange={(e) => setFormData({ ...formData, department: e.target.value })}
+                      className="w-full px-3.5 py-2.5 bg-gray-50/80 dark:bg-gray-900/80 border border-gray-200 dark:border-gray-700 rounded-xl text-xs sm:text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-extrabold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-1">
+                    Year of Study
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 3rd Year"
+                    value={formData.yearOfStudy || ''}
+                    onChange={(e) => setFormData({ ...formData, yearOfStudy: e.target.value })}
+                    className="w-full px-3.5 py-2.5 bg-gray-50/80 dark:bg-gray-900/80 border border-gray-200 dark:border-gray-700 rounded-xl text-xs sm:text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-extrabold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-1">
+                    Bio / Quote
+                  </label>
+                  <textarea
+                    rows={3}
+                    placeholder="Share a short bio about your passions or goals..."
+                    value={formData.bio || ''}
+                    onChange={(e) => setFormData({ ...formData, bio: e.target.value })}
+                    className="w-full px-3.5 py-2.5 bg-gray-50/80 dark:bg-gray-900/80 border border-gray-200 dark:border-gray-700 rounded-xl text-xs sm:text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 resize-none transition"
+                  />
+                </div>
+              </div>
+
+              {/* Contact & Social Links with Compact Icon Navigation */}
+              <div className="pt-3.5 border-t border-gray-100 dark:border-gray-700 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <h4 className="text-[11px] font-black uppercase text-orange-600 dark:text-orange-400 tracking-wider">
+                      Contact & Privacy
+                    </h4>
+                    <span className="text-[10px] text-gray-400 font-medium">
+                      ({CONTACT_FIELDS_CONFIG.length} channels)
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowAllContacts(!showAllContacts)}
+                    className="text-[10px] font-bold text-orange-600 dark:text-orange-400 hover:underline cursor-pointer"
+                  >
+                    {showAllContacts ? 'Compact View' : 'Show All'}
+                  </button>
+                </div>
+
+                {/* Responsive Channel Selector Bar: 3 columns on mobile (2 clean rows), 6 columns on desktop */}
+                <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5 sm:gap-2 p-1.5 bg-gray-50/80 dark:bg-gray-900/60 rounded-2xl border border-gray-200/70 dark:border-gray-700/70">
+                  {CONTACT_FIELDS_CONFIG.map((field) => {
+                    const Icon = field.icon;
+                    const isSelected = activeContactTab === field.id && !showAllContacts;
+                    const val = field.isEmail ? profile?.email : formData[field.valueKey];
+                    const isFilled = !!(val && String(val).trim());
+
+                    return (
+                      <button
+                        key={field.id}
+                        type="button"
+                        onClick={() => {
+                          setActiveContactTab(field.id);
+                          if (showAllContacts) setShowAllContacts(false);
+                        }}
+                        title={`${field.label} (${isFilled ? 'Configured' : 'Empty'})`}
+                        className={`relative flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-xl transition-all cursor-pointer min-w-0 ${
+                          isSelected
+                            ? 'bg-white dark:bg-gray-800 shadow-sm border border-orange-500/60 ring-2 ring-orange-500/20 scale-[1.02]'
+                            : 'hover:bg-white/60 dark:hover:bg-gray-800/40 text-gray-500 dark:text-gray-400 border border-transparent'
+                        }`}
+                      >
+                        <div className={`p-1 rounded-lg shrink-0 ${isSelected ? field.bg : 'bg-transparent'}`}>
+                          <Icon size={14} className={isSelected ? field.color : 'text-gray-500 dark:text-gray-400'} />
+                        </div>
+                        <span className={`text-[11px] sm:text-xs font-bold whitespace-nowrap ${
+                          isSelected ? 'text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400'
+                        }`}>
+                          {field.shortLabel}
+                        </span>
+                        {isFilled && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0 ml-0.5" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* If Compact Mode: Show the Active Contact's Detail Card */}
+                {!showAllContacts ? (
+                  (() => {
+                    const activeField = CONTACT_FIELDS_CONFIG.find((f) => f.id === activeContactTab) || CONTACT_FIELDS_CONFIG[0];
+                    const ActiveIcon = activeField.icon;
+                    const activeVis = formData[activeField.visKey] || (activeField.isEmail ? 'private' : 'public');
+
+                    return (
+                      <motion.div
+                        key={activeField.id}
+                        initial={{ opacity: 0, y: 3 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.15 }}
+                        className="p-3 sm:p-3.5 bg-gray-50/70 dark:bg-gray-900/60 rounded-2xl border border-gray-200/70 dark:border-gray-700/70 space-y-2.5"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="text-xs font-bold text-gray-800 dark:text-gray-200 flex items-center gap-1.5">
+                            <div className={`p-1.5 rounded-lg ${activeField.bg}`}>
+                              <ActiveIcon size={14} className={activeField.color} />
+                            </div>
+                            <span>{activeField.label}</span>
+                          </label>
+                          <CompactVisibilityDropdown
+                            value={activeVis}
+                            onChange={(val) => setFormData({ ...formData, [activeField.visKey]: val })}
+                          />
+                        </div>
+
+                        {activeField.isEmail ? (
+                          <div className="px-3 py-2 bg-gray-100/90 dark:bg-gray-800/80 rounded-xl text-xs sm:text-sm text-gray-600 dark:text-gray-300 font-semibold border border-gray-200/50 dark:border-gray-700/50">
+                            {profile?.email || 'Your account email'}
+                          </div>
+                        ) : (
+                          <input
+                            type={activeField.type}
+                            placeholder={activeField.placeholder}
+                            value={formData[activeField.valueKey] || ''}
+                            onChange={(e) => setFormData({ ...formData, [activeField.valueKey]: e.target.value })}
+                            className="w-full px-3 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-xs sm:text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition"
+                          />
+                        )}
+
+                        <div className="flex items-center justify-between text-[10px] text-gray-400 dark:text-gray-500">
+                          <span>{activeField.helper}</span>
+                          <div className="flex items-center gap-1">
+                            {CONTACT_FIELDS_CONFIG.map((f) => (
+                              <button
+                                key={f.id}
+                                type="button"
+                                onClick={() => setActiveContactTab(f.id)}
+                                className={`h-1.5 rounded-full transition-all cursor-pointer ${
+                                  f.id === activeContactTab ? 'bg-orange-500 w-3.5' : 'bg-gray-300 dark:bg-gray-700 w-1.5'
+                                }`}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      </motion.div>
+                    );
+                  })()
+                ) : (
+                  /* If Show All is clicked: Clean stacked cards with the new compact dropdowns */
+                  <div className="space-y-2.5">
+                    {CONTACT_FIELDS_CONFIG.map((field) => {
+                      const Icon = field.icon;
+                      const currentVis = formData[field.visKey] || (field.isEmail ? 'private' : 'public');
+                      return (
+                        <div
+                          key={field.id}
+                          className="p-3 bg-gray-50/70 dark:bg-gray-900/60 rounded-2xl border border-gray-200/70 dark:border-gray-700/70 space-y-2"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <label className="text-xs font-bold text-gray-800 dark:text-gray-200 flex items-center gap-1.5">
+                              <Icon size={14} className={field.color} />
+                              <span>{field.label}</span>
+                            </label>
+                            <CompactVisibilityDropdown
+                              value={currentVis}
+                              onChange={(val) => setFormData({ ...formData, [field.visKey]: val })}
+                            />
+                          </div>
+                          {field.isEmail ? (
+                            <div className="px-3 py-2 bg-gray-100/90 dark:bg-gray-800/80 rounded-xl text-xs text-gray-600 dark:text-gray-300 font-semibold">
+                              {profile?.email || 'Your account email'}
+                            </div>
+                          ) : (
+                            <input
+                              type={field.type}
+                              placeholder={field.placeholder}
+                              value={formData[field.valueKey] || ''}
+                              onChange={(e) => setFormData({ ...formData, [field.valueKey]: e.target.value })}
+                              className="w-full px-3 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-xs sm:text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition"
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </form>
+
+            {/* Sticky Modal Footer - Always Visible Above Mobile Nav */}
+            <div className="px-4 py-2.5 sm:px-6 sm:py-3 pb-[calc(0.6rem+env(safe-area-inset-bottom,0px))] border-t border-gray-100 dark:border-gray-700/80 bg-white/95 dark:bg-gray-800/95 backdrop-blur-md flex items-center justify-end gap-2.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => setIsEditing(false)}
+                className="px-3.5 py-1.5 sm:px-4 sm:py-2 text-xs font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-700 transition cursor-pointer text-center"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                form="edit-profile-form"
+                className="px-4 py-1.5 sm:px-5 sm:py-2 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-bold text-xs rounded-xl shadow-xs shadow-orange-500/20 active:scale-95 transition cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                <Save size={13} />
+                <span>Save</span>
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* ── Avatar Lightbox Preview Modal (Clean view without extra background) ── */}
+      <AnimatePresence>
+        {showAvatarPreview && (profile.profilePicture || profile.avatar) && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowAvatarPreview(false)}
+            className="fixed inset-0 z-[2000] bg-black/85 backdrop-blur-md flex items-center justify-center p-4 cursor-pointer"
+          >
+            {/* Close Button */}
+            <button
+              type="button"
+              onClick={() => setShowAvatarPreview(false)}
+              className="absolute top-4 right-4 p-2.5 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer z-10"
+              title="Close"
+            >
+              <X size={22} />
+            </button>
+
+            {/* Profile Image View */}
+            <motion.div
+              initial={{ scale: 0.85, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.85, opacity: 0 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+              onClick={(e) => e.stopPropagation()}
+              className="relative flex flex-col items-center max-w-[90vw] max-h-[85vh] cursor-default"
+            >
+              <UserAvatar
+                src={profile.profilePicture || profile.avatar}
+                name={profile.name}
+                className="max-w-[85vw] max-h-[70vh] w-72 h-72 sm:w-88 sm:h-88 rounded-3xl object-contain shadow-2xl border border-white/20"
+                textClassName="text-6xl sm:text-7xl font-extrabold"
+              />
+              <div className="mt-3 text-center">
+                <h4 className="text-white font-black text-base drop-shadow-md">{profile.name}</h4>
+                {headline && <p className="text-gray-300 text-xs mt-0.5 drop-shadow">{headline}</p>}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+

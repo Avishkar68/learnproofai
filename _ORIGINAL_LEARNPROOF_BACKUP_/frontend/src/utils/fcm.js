@@ -1,0 +1,455 @@
+import { getToken, onMessage } from 'firebase/messaging';
+import { messaging } from '../firebase';
+import axios from 'axios';
+import { toast } from 'react-hot-toast';
+import React from 'react';
+import { useSocialMessageStore } from '../store/socialMessageStore';
+import SwipeableNotificationToast from '../components/Common/SwipeableNotificationToast';
+
+/**
+ * Utility to request user's notification permission, register service worker,
+ * retrieve the FCM token, and save it to the backend server.
+ */
+export const getDevicePlatform = () => {
+  if (typeof window !== 'undefined' && window.Capacitor?.getPlatform) {
+    const p = window.Capacitor.getPlatform();
+    if (p === 'ios') return 'ios';
+    if (p === 'android') return 'android';
+  }
+  const isTWA = typeof window !== 'undefined' && (
+    window.matchMedia?.('(display-mode: standalone)')?.matches || 
+    window.navigator?.standalone === true || 
+    document.referrer?.includes('android-app://')
+  );
+  return isTWA ? 'twa' : 'web';
+};
+
+/**
+ * Utility to request user's notification permission, register service worker,
+ * retrieve the FCM token, and save it to the backend server.
+ */
+export const saveNativeFcmToken = async (token) => {
+  const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+  const googleToken = localStorage.getItem('google_token');
+  
+  if (!googleToken) {
+    console.warn("User is not logged in. Skipping native token sync with backend.");
+    return;
+  }
+
+  try {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    const deviceType = getDevicePlatform();
+    await axios.post(`${backendUrl}/api/save-fcm-token`, {
+      token,
+      deviceType,
+      timezone
+    }, {
+      headers: {
+        Authorization: `Bearer ${googleToken}`
+      }
+    });
+    console.log(`Native FCM Token synchronized with backend database successfully (${deviceType}).`);
+  } catch (error) {
+    console.error("Failed to synchronize native FCM token with backend:", error);
+  }
+};
+
+export const saveAnonymousFcmToken = async (token) => {
+  const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+  try {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    const deviceType = getDevicePlatform();
+
+    await axios.post(`${backendUrl}/api/v1/devices/anonymous-token`, {
+      token,
+      deviceType,
+      timezone
+    });
+    console.log(`Anonymous FCM Token synchronized with backend database successfully (${deviceType}).`);
+  } catch (error) {
+    console.error("Failed to synchronize anonymous FCM token with backend:", error);
+  }
+};
+
+export const requestNotificationPermissionAndGetToken = async () => {
+  // Check if running inside Capacitor Native App (iOS or Android)
+  const isCapacitorNative = typeof window !== 'undefined' && !!window.Capacitor?.isNativePlatform?.();
+
+  if (isCapacitorNative) {
+    try {
+      const { PushNotifications } = await import('@capacitor/push-notifications');
+      let permStatus = await PushNotifications.checkPermissions();
+      if (permStatus.receive === 'prompt' || permStatus.receive === 'prompt-with-rationale') {
+        permStatus = await PushNotifications.requestPermissions({
+          permissions: ['alert', 'badge', 'sound']
+        });
+      }
+      if (permStatus.receive === 'granted') {
+        await PushNotifications.register();
+      }
+    } catch (capErr) {
+      console.warn("[Capacitor] Push permission request failed:", capErr);
+    }
+
+    const nativeToken = localStorage.getItem('native_fcm_token');
+    if (nativeToken) {
+      console.log("Found native FCM token in localStorage:", nativeToken);
+      await saveNativeFcmToken(nativeToken);
+      return nativeToken;
+    }
+    return null;
+  }
+
+  // Check if we are running in a browser with a stored native token
+  const nativeToken = localStorage.getItem('native_fcm_token');
+  if (nativeToken) {
+    console.log("Found native FCM token in localStorage:", nativeToken);
+    await saveNativeFcmToken(nativeToken);
+    return nativeToken;
+  }
+
+  // Support check
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+    console.warn("FCM Notifications are not supported in this browser environment.");
+    return null;
+  }
+
+  // Ensure messaging instance is initialized
+  if (!messaging) {
+    console.warn("FCM Messaging client is not initialized.");
+    return null;
+  }
+
+  try {
+    // 1. Request Notification Permission
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      console.warn("Notification permission was not granted by user.");
+      return null;
+    }
+
+    // 2. Fetch or register Service Worker
+    let registration = await navigator.serviceWorker.getRegistration('/firebase-messaging-sw.js');
+    if (!registration) {
+      registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js', {
+        scope: '/'
+      });
+      console.log('Firebase Service Worker registered successfully:', registration);
+    }
+
+    // Wait for the Service Worker to be active
+    await navigator.serviceWorker.ready;
+
+    // 3. Generate token using VAPID key
+    const VAPID_KEY = import.meta.env.VITE_FIREBASE_VAPID_KEY || 'BH7mjgTNInbOL_sfl6xF_RXJn6rMWhGIuNjeoO8TKRlTwMRI4SSifCA3Ppuj43nMGKSYXyGHQTZOahEUUdiWgN8'; 
+    
+    const token = await getToken(messaging, {
+      serviceWorkerRegistration: registration,
+      vapidKey: VAPID_KEY
+    });
+
+    if (token) {
+      console.log("Generated FCM Registration Token:", token);
+
+      // Always save token anonymously
+      await saveAnonymousFcmToken(token);
+
+      // Save token to backend authenticated API if logged in
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+      const googleToken = localStorage.getItem('google_token');
+      
+      if (!googleToken) {
+        console.warn("User is not logged in. Skipping authenticated token sync with backend.");
+        return token;
+      }
+
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      // Detect PWA or TWA display modes
+      const isTWA = window.matchMedia('(display-mode: standalone)').matches || 
+                    window.navigator.standalone === true || 
+                    document.referrer.includes('android-app://');
+
+      await axios.post(`${backendUrl}/api/save-fcm-token`, {
+        token,
+        deviceType: isTWA ? 'twa' : 'web',
+        timezone
+      }, {
+        headers: {
+          Authorization: `Bearer ${googleToken}`
+        }
+      });
+
+      console.log("Authenticated FCM Token synchronized with backend database successfully.");
+      return token;
+    } else {
+      console.warn("FCM getToken resolved to null.");
+      return null;
+    }
+  } catch (error) {
+    console.error("An error occurred during FCM token registration flow:", error);
+    return null;
+  }
+};
+
+export const resolveNotificationPath = (data) => {
+  if (!data) return '/dashboard';
+  let path = '/dashboard';
+  if (data.roomName) {
+    path = `/dashboard/live-rooms/${data.roomName}`;
+  } else if (data.type === 'CHAT_MESSAGE' && data.senderId) {
+    path = `/dashboard/social/chats/direct/${data.senderId}`;
+  } else if (data.type === 'GROUP_MESSAGE' && data.groupId) {
+    path = `/dashboard/social/chats/group/${data.groupId}`;
+  } else if (data.type === 'FRIEND_REQUEST_RECEIVED' || data.type === 'FRIEND_REQUEST') {
+    path = `/dashboard/social?tab=friends&sub=pending`;
+  } else if (data.type === 'FRIEND_REQUEST_ACCEPTED' || data.type === 'FRIEND_ACCEPTED') {
+    path = `/dashboard/social?tab=friends`;
+  } else if (data.clickAction && data.clickAction !== '/dashboard') {
+    path = data.clickAction;
+  } else if (data.click_action && data.click_action !== '/dashboard') {
+    path = data.click_action;
+  } else if (data.targetUrl) {
+    path = data.targetUrl;
+  } else if (data.url) {
+    path = data.url;
+  } else if (data.path) {
+    path = data.path;
+  }
+
+  // If an absolute URL is provided, strip origin to get internal router path
+  if (typeof path === 'string' && (path.startsWith('http://') || path.startsWith('https://'))) {
+    try {
+      const u = new URL(path);
+      path = u.pathname + u.search + u.hash;
+    } catch (_) {}
+  }
+  return path || '/dashboard';
+};
+
+// Register foreground message handler to show in-app toasts when the tab is active/focused
+if (messaging) {
+  onMessage(messaging, (payload) => {
+    console.log('[FCM] Foreground message received:', payload);
+    if (payload.notification) {
+      const data = payload.data || {};
+      
+      // Suppress in-app toast for messages and friend events (handled directly by active socket listeners)
+      if (
+        data.type === 'CHAT_MESSAGE' || 
+        data.type === 'GROUP_MESSAGE' ||
+        data.type === 'FRIEND_REQUEST_RECEIVED' ||
+        data.type === 'FRIEND_REQUEST' ||
+        data.type === 'FRIEND_REQUEST_ACCEPTED' ||
+        data.type === 'FRIEND_ACCEPTED'
+      ) {
+        return;
+      }
+
+      // If already viewing this live room, suppress toast
+      if (data.roomName && window.location.pathname.includes(data.roomName)) {
+        return;
+      }
+
+      // Suppress in-app toast if the user is already actively viewing this chat
+      const isChatActive = useSocialMessageStore.getState().isConversationActive(data.senderId, data.groupId);
+      if (isChatActive) {
+        return;
+      }
+
+      const targetPath = resolveNotificationPath(data);
+
+      toast.custom((t) => (
+        React.createElement(SwipeableNotificationToast, {
+          t,
+          avatarBadge: React.createElement('span', { className: "absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-red-500 ring-2 ring-white dark:ring-gray-800 animate-pulse" }),
+          fallbackInitial: data.roomName ? '🔴' : '🔔',
+          title: payload.notification.title,
+          body: payload.notification.body,
+          tag: 'now',
+          onClick: () => {
+            sessionStorage.setItem('pending_notification_route', targetPath);
+            window.dispatchEvent(new CustomEvent('lp_navigate', { detail: targetPath }));
+          }
+        })
+      ), {
+        id: `live_room_event_${payload.data?.roomName || payload.data?.type || Date.now()}`,
+        duration: 5000,
+        position: 'top-center'
+      });
+    }
+  });
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('nativeFcmTokenReady', async (e) => {
+    const token = e.detail;
+    console.log("Received nativeFcmTokenReady event:", token);
+    if (token) {
+      localStorage.setItem('native_fcm_token', token);
+      await saveAnonymousFcmToken(token);
+      await saveNativeFcmToken(token);
+    }
+  });
+
+  // Capacitor Native Push Notifications Handler (Android & iOS)
+  (async () => {
+    try {
+      const { Capacitor } = await import('@capacitor/core');
+      if (Capacitor && Capacitor.isNativePlatform()) {
+        const { PushNotifications } = await import('@capacitor/push-notifications');
+
+        // Immediately attach notification action listener to catch cold-start taps
+        PushNotifications.addListener('pushNotificationActionPerformed', (action) => {
+          console.log('[Capacitor] pushNotificationActionPerformed triggered:', action);
+          const data = action.notification?.data || {};
+          const targetPath = resolveNotificationPath(data);
+          console.log('[Capacitor] Target path resolved:', targetPath);
+          sessionStorage.setItem('pending_notification_route', targetPath);
+          localStorage.setItem('pending_notification_route', targetPath);
+          window.dispatchEvent(new CustomEvent('lp_navigate', { detail: targetPath }));
+          window.dispatchEvent(new CustomEvent('lp_notification_click', { detail: data }));
+        });
+
+        try {
+          PushNotifications.removeAllDeliveredNotifications();
+        } catch (_) {}
+
+        PushNotifications.addListener('pushNotificationReceived', (notification) => {
+          console.log('Push notification received in foreground:', notification);
+          if (notification.title) {
+            const notifData = notification.data || {};
+
+            // Suppress in-app toast for chat/group messages, friend requests, and public live room broadcasts
+            if (
+              notifData.type === 'CHAT_MESSAGE' || 
+              notifData.type === 'GROUP_MESSAGE' || 
+              notifData.type === 'FRIEND_REQUEST_RECEIVED' ||
+              notifData.type === 'FRIEND_REQUEST' ||
+              notifData.type === 'FRIEND_REQUEST_ACCEPTED' ||
+              notifData.type === 'FRIEND_ACCEPTED' ||
+              notifData.type === 'LIVE_ROOM_CREATED' || 
+              notifData.type === 'LIVE_ROOM_SCHEDULED'
+            ) {
+              return;
+            }
+
+            // Suppress in-app toast if the user is already actively viewing this chat
+            const isChatActive = useSocialMessageStore.getState().isConversationActive(notifData.senderId, notifData.groupId);
+            if (isChatActive) {
+              return;
+            }
+
+            const notifPath = resolveNotificationPath(notifData);
+            toast.custom((t) => (
+              React.createElement(SwipeableNotificationToast, {
+                t,
+                fallbackInitial: '🔔',
+                title: notification.title,
+                body: notification.body,
+                tag: 'now',
+                onClick: () => {
+                  sessionStorage.setItem('pending_notification_route', notifPath);
+                  window.dispatchEvent(new CustomEvent('lp_navigate', { detail: notifPath }));
+                }
+              })
+            ), {
+              id: `cap_${notifData.roomName || notifData.type || Date.now()}`,
+              duration: 4000,
+              position: 'top-center'
+            });
+          }
+        });
+
+        // Attach registration listeners BEFORE requesting permissions or calling register()
+        PushNotifications.addListener('registration', async (token) => {
+          console.log('[Capacitor] Native push token registered:', token.value);
+          localStorage.setItem('native_fcm_token', token.value);
+          await saveAnonymousFcmToken(token.value);
+          await saveNativeFcmToken(token.value);
+        });
+
+        PushNotifications.addListener('registrationError', (error) => {
+          console.warn('[Capacitor] Error registering for push notifications:', error);
+        });
+
+        let permStatus = await PushNotifications.checkPermissions();
+        if (permStatus.receive === 'prompt' || permStatus.receive === 'prompt-with-rationale') {
+          permStatus = await PushNotifications.requestPermissions({
+            permissions: ['alert', 'badge', 'sound']
+          });
+        }
+        if (permStatus.receive === 'granted') {
+          if (Capacitor.getPlatform() === 'android') {
+            try {
+              await PushNotifications.createChannel({
+                id: 'learnproof_notifications',
+                name: 'LearnProof Notifications',
+                description: 'Notifications for live rooms, chats, invitations, and reminders',
+                importance: 5,
+                visibility: 1,
+                sound: 'default',
+                vibration: true,
+                lights: true,
+                lightColor: '#F97316'
+              });
+              console.log('[Capacitor] Android notification channel "learnproof_notifications" created.');
+            } catch (chanErr) {
+              console.warn('[Capacitor] Error creating notification channel:', chanErr);
+            }
+          }
+
+          await PushNotifications.register();
+        }
+      }
+    } catch (e) {
+      console.warn('Native Capacitor push initialization bypassed:', e);
+    }
+  })();
+}
+
+/**
+ * Safely updates or clears the device app badge (iOS 16.4+ PWA Badging API & Capacitor)
+ * @param {number} count - Unread notifications count. Passing 0 or null clears the badge.
+ */
+export const updateAppBadge = async (count = 0) => {
+  const numericCount = Math.max(0, parseInt(count, 10) || 0);
+
+  // 1. Web Badging API (Supported on iOS 16.4+ PWAs, Chrome, Edge)
+  if (typeof navigator !== 'undefined') {
+    try {
+      if (numericCount > 0 && 'setAppBadge' in navigator) {
+        await navigator.setAppBadge(numericCount);
+      } else if ('clearAppBadge' in navigator) {
+        await navigator.clearAppBadge();
+      } else if ('setAppBadge' in navigator) {
+        await navigator.setAppBadge(0);
+      }
+    } catch (badgeErr) {
+      console.debug('[AppBadge] Web Badging API call skipped/failed:', badgeErr);
+    }
+  }
+
+  // 2. Also notify Service Worker to clear badge if supported
+  if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator && numericCount === 0) {
+    try {
+      if (navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({ type: 'CLEAR_BADGE' });
+      }
+    } catch (_) {}
+  }
+
+  // 3. Capacitor native push notifications badge reset (for iOS/Android native app)
+  if (typeof window !== 'undefined' && window.Capacitor?.isNativePlatform?.()) {
+    try {
+      const { PushNotifications } = await import('@capacitor/push-notifications');
+      if (numericCount === 0) {
+        await PushNotifications.removeAllDeliveredNotifications();
+      }
+    } catch (capErr) {
+      console.debug('[AppBadge] Capacitor PushNotifications cleanup skipped:', capErr);
+    }
+  }
+};
+
+

@@ -1,0 +1,100 @@
+services:
+  app:
+    build:
+      context: ./nodejs
+      dockerfile: Dockerfile
+    container_name: learnproof-app
+    restart: always
+    command: pm2-runtime start server.js -i max --name learnproof
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://user:password@db:5432/learnproof_db?connection_limit=15&pool_timeout=30
+      - SOCIAL_DATABASE_URL=postgresql://user:password@db:5432/learnproof_db?connection_limit=15&pool_timeout=30
+      - REDIS_URL=redis://cache:6379
+      - NODE_ENV=production
+      - GOOGLE_CLIENT_ID=557947080645-2iqd1t1h79b273ktjqthcg6q23k9pem1.apps.googleusercontent.com
+      - MATRIX_HOMESERVER_URL=http://conduit:8008
+      - MATRIX_CLIENT_HOMESERVER_URL=https://learnproofai.com
+    env_file:
+      - ./nodejs/.env
+    volumes:
+      - ./nodejs/media:/app/media
+      - ./nodejs/prisma:/app/prisma
+      - /home/ubuntu/.config/gcloud:/root/.config/gcloud:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_started
+      conduit:
+        condition: service_started
+
+  db:
+    image: postgres:14-alpine
+    container_name: learnproof-db
+    restart: always
+    command: postgres -c max_connections=300 -c shared_buffers=256MB -c effective_cache_size=768MB -c wal_buffers=16MB -c checkpoint_completion_target=0.9
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=learnproof_db
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d learnproof_db || exit 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+  cache:
+    image: redis:7-alpine
+    container_name: learnproof-cache
+    restart: always
+    ports:
+      - "6379:6379"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_BACKEND_URL=https://api.learnproofai.com
+        - VITE_GOOGLE_CLIENT_ID=557947080645-2iqd1t1h79b273ktjqthcg6q23k9pem1.apps.googleusercontent.com
+        - VITE_ADMIN_EMAIL=nitin9699176009@gmail.com,kakadeavishkar84@gmail.com
+        - VITE_LINKEDIN_CLIENT_ID=77qo9l0sx1sbav
+        - VITE_FIREBASE_KEY=AIzaSyD43T1--NTCDprsegnew2ZrL15FY7rz1uU
+        - VITE_FIREBASE_VAPID_KEY=BH7mjgTNInbOL_sfl6xF_RXJn6rMWhGIuNjeoO8TKRlTwMRI4SSifCA3Ppuj43nMGKSYXyGHQTZOahEUUdiWgN8
+        - VITE_APPLE_CLIENT_ID=com.learnproof.web
+    container_name: learnproof-frontend
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /etc/letsencrypt/live:/etc/letsencrypt/live:ro
+      - /etc/letsencrypt/archive:/etc/letsencrypt/archive:ro
+      - ./nodejs/media:/usr/share/nginx/html/media:ro
+    depends_on:
+      - app
+      - conduit
+
+  conduit:
+    image: matrixconduit/matrix-conduit:latest
+    container_name: learnproof-conduit
+    restart: always
+    environment:
+      CONDUIT_SERVER_NAME: "learnproofai.com"
+      CONDUIT_DATABASE_BACKEND: "rocksdb"
+      CONDUIT_DATABASE_PATH: "/var/lib/matrix-conduit/"
+      CONDUIT_PORT: "8008"
+      CONDUIT_REGISTRATION_SHARED_SECRET: "1^ZzuyvWeCevsTm1*fTJEJ4KhcTRtdvod*_5QPLK0BGn*Lsx#H"
+      CONDUIT_ALLOW_REGISTRATION: "false"
+      CONDUIT_CONFIG: ""
+    volumes:
+      - conduit_data:/var/lib/matrix-conduit/
+
+volumes:
+  postgres_data:
+  conduit_data:

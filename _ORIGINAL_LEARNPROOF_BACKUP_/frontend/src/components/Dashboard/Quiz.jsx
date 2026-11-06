@@ -1,0 +1,1103 @@
+import { useState, useEffect, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
+import axios from "axios";
+import { useAuth } from "../../context/AuthContext";
+import toast from "react-hot-toast";
+import { motion } from "framer-motion";
+import { Play, CheckCircle, Circle, ArrowLeft, Clock, Sparkles, BookOpen, AlertCircle, X, Trophy, Lock, Award, ChevronLeft, ChevronRight, Video, Library, Trash2, Search } from 'lucide-react';
+import { useModal } from "../../context/ModalContext";
+import { useQuizStore } from "../../store/quizStore.js";
+import socialApi from "../../api/socialApi.js";
+import QuizMathText from '../Common/QuizMathText';
+
+const Quiz = () => {
+    const [searchParams, setSearchParams] = useSearchParams();
+    const { token: authToken, user } = useAuth();
+    const effectiveToken = authToken || (typeof window !== 'undefined' ? localStorage.getItem("google_token") : null);
+    const { confirm } = useModal();
+
+    const playlists = useQuizStore(state => state.playlists);
+    const history = useQuizStore(state => state.history);
+    const loading = useQuizStore(state => state.loading);
+    const fetchQuizData = useQuizStore(state => state.fetchQuizData);
+    const addAttempt = useQuizStore(state => state.addAttempt);
+    const deleteAttempt = useQuizStore(state => state.deleteAttempt);
+    const setPlaylists = useQuizStore(state => state.setPlaylists);
+
+    // iOS WebKit-safe date formatting (prevents RangeError: Invalid time value on Safari)
+    const formatAttemptDate = (dateVal, options) => {
+        if (!dateVal) return '';
+        try {
+            const safeStr = typeof dateVal === 'string' && dateVal.includes(' ') && !dateVal.includes('T')
+                ? dateVal.replace(' ', 'T')
+                : dateVal;
+            const d = new Date(safeStr);
+            if (isNaN(d.getTime())) return '';
+            return d.toLocaleDateString(undefined, options);
+        } catch (_) {
+            return '';
+        }
+    };
+
+    const [searchQuery, setSearchQuery] = useState("");
+    const filteredPlaylists = playlists.filter(pl => pl.name.toLowerCase().includes(searchQuery.toLowerCase()));
+    const hasAnyQuizContent = (playlists && playlists.length > 0) || (history && history.length > 0);
+    const showQuizSearch = !loading && Boolean(searchQuery.trim().length > 0 || hasAnyQuizContent);
+
+    const [videos, setVideos] = useState([]);
+    const [selectedHistoryQuiz, setSelectedHistoryQuiz] = useState(null);
+    const [quizData, setQuizData] = useState(null);
+    const [answers, setAnswers] = useState({});
+    const [timeLeft, setTimeLeft] = useState(300); // 5 min
+    const [submitting, setSubmitting] = useState(false);
+    const [result, setResult] = useState(null);
+
+    // Certificate Request State
+    const [isRequestModalOpen, setIsRequestModalOpen] = useState(false);
+    const [requestFullName, setRequestFullName] = useState("");
+    const [requestNotes, setRequestNotes] = useState("");
+    const [requestingCert, setRequestingCert] = useState(false);
+
+    const handleOpenRequestModal = () => {
+        setRequestFullName(user?.name || "");
+        setRequestNotes("");
+        setIsRequestModalOpen(true);
+    };
+
+    const handleSubmitCertificateRequest = async (e) => {
+        e.preventDefault();
+        const pId = result?.playlist_id || quizData?.playlistId;
+        if (!pId) {
+            toast.error("Unable to identify course playlist.");
+            return;
+        }
+        setRequestingCert(true);
+        try {
+            const res = await axios.post(
+                `${import.meta.env.VITE_BACKEND_URL}/api/certificates/request`,
+                {
+                    playlistId: pId,
+                    quizId: result?.quiz?.id || quizData?.quizId,
+                    fullName: requestFullName,
+                    userNotes: requestNotes
+                },
+                { headers: { Authorization: `Bearer ${effectiveToken}` } }
+            );
+
+            toast.success(res.data?.message || "Certificate request submitted for admin review!");
+            setIsRequestModalOpen(false);
+            setResult(prev => ({
+                ...prev,
+                certificate_request_status: 'PENDING'
+            }));
+        } catch (err) {
+            console.error("Certificate request error:", err);
+            toast.error(err.response?.data?.error || "Failed to submit request.");
+        } finally {
+            setRequestingCert(false);
+        }
+    };
+
+    const [currentPage, setCurrentPage] = useState(1);
+    const [loadingQuizDetails, setLoadingQuizDetails] = useState(null);
+    const itemsPerPage = 6;
+
+    const playlistScrollRef = useRef(null);
+
+    const scroll = (direction) => {
+        if (playlistScrollRef.current) {
+            const { scrollLeft, clientWidth } = playlistScrollRef.current;
+            const scrollAmount = clientWidth * 0.8;
+            playlistScrollRef.current.scrollTo({
+                left: direction === 'left' ? scrollLeft - scrollAmount : scrollLeft + scrollAmount,
+                behavior: 'smooth'
+            });
+        }
+    };
+
+    const attemptParam = searchParams.get("attempt");
+
+    useEffect(() => {
+        if (effectiveToken) {
+            fetchQuizData(effectiveToken);
+        }
+    }, [effectiveToken, fetchQuizData]);
+
+    // Synchronize browser back/forward navigation with quiz attempt view
+    useEffect(() => {
+        if (!attemptParam) {
+            setSelectedHistoryQuiz(null);
+            return;
+        }
+
+        const targetId = parseInt(attemptParam, 10);
+        if (selectedHistoryQuiz && selectedHistoryQuiz.id === targetId) return;
+
+        const found = history.find(h => h.id === targetId);
+        if (found) {
+            if (found.questions) {
+                setSelectedHistoryQuiz(found);
+            } else if (effectiveToken) {
+                setLoadingQuizDetails(targetId);
+                (async () => {
+                    try {
+                        let fullQuiz;
+                        try {
+                            const res = await socialApi.get(`/quiz-history/${targetId}`, {
+                                params: { idToken: effectiveToken, token: effectiveToken, _t: Date.now() }
+                            });
+                            fullQuiz = res.data;
+                        } catch (_) {
+                            const res = await axios.get(`${import.meta.env.VITE_BACKEND_URL}/api/quiz-history/${targetId}?idToken=${encodeURIComponent(effectiveToken)}&_t=${Date.now()}`, {
+                                headers: { Authorization: `Bearer ${effectiveToken}` }
+                            });
+                            fullQuiz = res.data;
+                        }
+                        if (fullQuiz) {
+                            addAttempt(fullQuiz);
+                            setSelectedHistoryQuiz(fullQuiz);
+                        }
+                    } catch (err) {
+                        console.error("Failed to load attempt from URL:", err);
+                    } finally {
+                        setLoadingQuizDetails(null);
+                    }
+                })();
+            }
+        }
+    }, [attemptParam, history, effectiveToken]);
+
+    useEffect(() => {
+        if (!quizData) return;
+
+        const timer = setInterval(() => {
+            setTimeLeft(t => {
+                if (t <= 1) {
+                    clearInterval(timer);
+                    handleSubmit(); // auto-submit when time runs out
+                    return 0;
+                }
+                return t - 1;
+            });
+        }, 1000);
+
+        return () => clearInterval(timer);
+    }, [quizData]);
+
+    const handleStartQuiz = async (type, id) => {
+        try {
+            const res = await axios.post(`${import.meta.env.VITE_BACKEND_URL}/api/start-quiz/`, {
+                idToken: effectiveToken,
+                contentType: type,
+                contentId: id,
+            }, {
+                headers: { Authorization: `Bearer ${effectiveToken}` }
+            });
+            toast.dismiss();
+            setQuizData(res.data.quiz);
+            setAnswers({});
+            setTimeLeft(res.data.quiz.time_limit * 60); 
+        } catch (err) {
+            console.error(err);
+            if (err.response?.status === 403) {
+                toast.error(err.response.data.message || "Prerequisites not met");
+            } else {
+                toast.error("Failed to start quiz");
+            }
+        }
+    };
+
+    const handleAnswer = (qIdx, value) => {
+        setAnswers(prev => ({ ...prev, [qIdx]: value }));
+    };
+
+    const handleSubmit = async () => {
+        if (!quizData) return;
+
+        setSubmitting(true);
+        try {
+            const answerList = quizData.questions.map((_, idx) => answers[idx] || "");
+            const res = await axios.post(`${import.meta.env.VITE_BACKEND_URL}/api/submit-quiz/`, {
+                idToken: effectiveToken,
+                quizId: quizData.quiz_id,
+                answers: answerList,
+            }, {
+                headers: { Authorization: `Bearer ${effectiveToken}` }
+            });
+            setResult(res.data);
+            toast.success("Quiz submitted!");
+            setQuizData(null); 
+
+            if (res.data.quiz) {
+                addAttempt(res.data.quiz);
+            }
+
+            // Refresh target lists in background to update progress
+            fetchQuizData(effectiveToken, true);
+
+        } catch (err) {
+            console.error(err);
+            toast.error("Failed to submit quiz");
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    const handleViewHistoryQuiz = async (hist) => {
+        setSearchParams({ attempt: String(hist.id) });
+        if (hist.questions) {
+            setSelectedHistoryQuiz(hist);
+            return;
+        }
+
+        setLoadingQuizDetails(hist.id);
+        try {
+            let fullQuiz;
+            try {
+                const res = await socialApi.get(`/quiz-history/${hist.id}`, {
+                    params: { idToken: effectiveToken, token: effectiveToken, _t: Date.now() }
+                });
+                fullQuiz = res.data;
+            } catch (_) {
+                const res = await axios.get(`${import.meta.env.VITE_BACKEND_URL}/api/quiz-history/${hist.id}?idToken=${encodeURIComponent(effectiveToken)}&_t=${Date.now()}`, {
+                    headers: { Authorization: `Bearer ${effectiveToken}` }
+                });
+                fullQuiz = res.data;
+            }
+            if (fullQuiz) {
+                addAttempt(fullQuiz);
+                setSelectedHistoryQuiz(fullQuiz);
+            }
+        } catch (err) {
+            console.error("Failed to fetch quiz attempt details:", err);
+            toast.error("Failed to load quiz details. Please try again.");
+        } finally {
+            setLoadingQuizDetails(null);
+        }
+    };
+
+    const handleCloseHistory = () => {
+        setSelectedHistoryQuiz(null);
+        setSearchParams({});
+    };
+
+    const handleDeleteHistory = async (id) => {
+        const confirmed = await confirm({
+            title: "Delete Quiz Attempt",
+            message: "Are you sure you want to delete this quiz attempt record? This action cannot be undone.",
+            confirmText: "Delete",
+            type: "danger"
+        });
+
+        if (!confirmed) return;
+
+        try {
+            try {
+                await socialApi.delete(`/quiz-history/${id}`, {
+                    params: { idToken: effectiveToken, token: effectiveToken }
+                });
+            } catch (_) {
+                await axios.delete(`${import.meta.env.VITE_BACKEND_URL}/api/quiz-history/${id}?idToken=${encodeURIComponent(effectiveToken)}`, {
+                    headers: { Authorization: `Bearer ${effectiveToken}` }
+                });
+            }
+            toast.success("Quiz attempt deleted successfully");
+            deleteAttempt(id);
+            if (selectedHistoryQuiz?.id === id) {
+                setSelectedHistoryQuiz(null);
+                setSearchParams({});
+            }
+        } catch (err) {
+            console.error(err);
+            toast.error("Failed to delete quiz attempt");
+        }
+    };
+
+    if (loading) {
+        return (
+            <div className="h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-800">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-orange-500"></div>
+            </div>
+        );
+    }
+
+    if (quizData) {
+        const questions = quizData.questions;
+        return (
+            <div className="min-h-[calc(100vh-100px)] bg-orange-50 dark:bg-gray-900 transition-colors duration-300">
+                {/* Header for Quiz */}
+                <div className="sticky top-0 z-20 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md border-b border-orange-100 dark:border-gray-800 p-3 sm:p-4 transition-all duration-300">
+                    <div className="max-w-4xl mx-auto flex items-center justify-between">
+                        <div className="flex items-center gap-2 sm:gap-3">
+                            <button 
+                                onClick={async () => {
+                                    const confirmed = await confirm({
+                                        title: "Quit Quiz",
+                                        message: "Are you sure you want to quit the quiz? Progress will be lost.",
+                                        confirmText: "Quit",
+                                        type: "danger"
+                                    });
+                                    if(confirmed) {
+                                        setQuizData(null);
+                                    }
+                                }}
+                                className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition-colors"
+                            >
+                                <ArrowLeft size={20} className="text-gray-600 dark:text-gray-400" />
+                            </button>
+                            <h2 className="text-sm sm:text-lg font-black dark:text-white uppercase tracking-tighter">Certification Test</h2>
+                        </div>
+                        <div className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl border transition-colors ${timeLeft < 60 ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-900/50 text-red-600 dark:text-red-400' : 'bg-orange-50 dark:bg-gray-800 border-orange-200/50 dark:border-gray-700 text-orange-600 dark:text-orange-400'}`}>
+                            <Clock size={16} className={timeLeft < 60 ? 'animate-pulse' : ''} />
+                            <span className="font-mono font-bold text-base sm:text-lg">
+                                {Math.floor(timeLeft / 60)}:{String(timeLeft % 60).padStart(2, '0')}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="max-w-4xl mx-auto p-4 sm:p-6 pb-32">
+                    <div className="space-y-12">
+                        {questions.map((q, idx) => {
+                            const hasOptions = q.options && Array.isArray(q.options) && q.options.length > 0;
+                            
+                            return (
+                                <motion.div 
+                                    key={idx}
+                                    initial={{ opacity: 0, y: 20 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    transition={{ delay: idx * 0.05 }}
+                                    className="bg-white dark:bg-gray-800 rounded-3xl p-5 sm:p-8 shadow-sm border border-gray-100 dark:border-gray-700"
+                                >
+                                    <div className="flex gap-3 sm:gap-4 items-start mb-6">
+                                        <span className="flex-shrink-0 w-8 h-8 rounded-full bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400 flex items-center justify-center font-black text-xs sm:text-sm">
+                                            {idx + 1}
+                                        </span>
+                                        <div className="text-base sm:text-xl font-bold text-gray-800 dark:text-white leading-relaxed flex-1 min-w-0">
+                                            <QuizMathText text={q.question} />
+                                        </div>
+                                    </div>
+
+                                    {hasOptions ? (
+                                        <div className="grid grid-cols-1 gap-3 ml-0 sm:ml-12">
+                                            {q.options.map((opt, optIdx) => (
+                                                <label 
+                                                    key={optIdx}
+                                                    className={`group relative flex items-center p-3 sm:p-4 rounded-2xl border-2 cursor-pointer transition-all duration-300 ${
+                                                        answers[idx] === opt 
+                                                        ? 'bg-orange-50 dark:bg-orange-900/10 border-orange-500 shadow-md transform scale-[1.01]' 
+                                                        : 'bg-gray-50 dark:bg-gray-900/50 border-transparent dark:border-gray-700 hover:border-orange-200 dark:hover:border-orange-500/50'
+                                                    }`}
+                                                >
+                                                    <input
+                                                        type="radio"
+                                                        name={`q-${idx}`}
+                                                        value={opt}
+                                                        checked={answers[idx] === opt}
+                                                        onChange={() => handleAnswer(idx, opt)}
+                                                        className="sr-only"
+                                                    />
+                                                    <div className={`w-4 h-4 sm:w-5 sm:h-5 rounded-full border-2 mr-3 sm:mr-4 flex-shrink-0 flex items-center justify-center transition-colors ${
+                                                        answers[idx] === opt 
+                                                        ? 'border-orange-500 bg-orange-500' 
+                                                        : 'border-gray-300 dark:border-gray-600 group-hover:border-orange-300'
+                                                    }`}>
+                                                        {answers[idx] === opt && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                                                    </div>
+                                                    <div className={`text-sm sm:text-base font-bold transition-colors flex-1 min-w-0 ${
+                                                        answers[idx] === opt ? 'text-orange-900 dark:text-orange-400' : 'text-gray-700 dark:text-gray-400'
+                                                    }`}>
+                                                        <QuizMathText text={opt} />
+                                                    </div>
+                                                </label>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <div className="ml-0 sm:ml-12">
+                                            <textarea
+                                                value={answers[idx] || ""}
+                                                onChange={e => handleAnswer(idx, e.target.value)}
+                                                placeholder="Type your answer here..."
+                                                rows={3}
+                                                className="w-full p-4 rounded-xl border-2 border-gray-100 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 text-gray-800 dark:text-white focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500 transition-all placeholder:text-gray-400 dark:placeholder:text-gray-600"
+                                            />
+                                            <div className="mt-2 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                                                <AlertCircle size={14} />
+                                                <span>AI will evaluate your descriptive answer.</span>
+                                            </div>
+                                        </div>
+                                    )}
+                                </motion.div>
+                            );
+                        })}
+                    </div>
+                </div>
+
+                {/* Footer Submit Bar */}
+                <div className="fixed bottom-0 left-0 right-0 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md border-t dark:border-gray-800 p-4 z-30 shadow-[0_-4px_20px_rgba(0,0,0,0.1)] transition-all">
+                    <div className="max-w-4xl mx-auto flex items-center justify-between gap-4">
+                        <div className="hidden sm:block">
+                            <p className="text-sm text-gray-500 dark:text-gray-400">
+                                {Object.keys(answers).length} of {questions.length} answered
+                            </p>
+                        </div>
+                        <div className="w-full sm:w-auto">
+                            <button
+                                disabled={submitting}
+                                onClick={handleSubmit}
+                                className="w-full sm:w-64 px-8 py-3 bg-gradient-to-r from-orange-500 to-amber-500 text-white font-bold rounded-xl hover:from-orange-600 hover:to-amber-600 transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:scale-100 shadow-lg shadow-orange-500/20 flex items-center justify-center gap-2 h-12"
+                            >
+                                {submitting ? (
+                                    <>
+                                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                                        <span>Submitting Test...</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <span>Submit Certification Test</span>
+                                        <ArrowLeft className="rotate-180" size={18} />
+                                    </>
+                                )}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    if (result) {
+        return (
+            <div className="min-h-[calc(100vh-100px)] flex items-center justify-center bg-orange-50 dark:bg-gray-900 p-4 transition-colors duration-300">
+                <motion.div
+                    initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    className="bg-white dark:bg-gray-800 p-10 rounded-3xl shadow-2xl max-w-lg w-full text-center border border-gray-100 dark:border-gray-700/50 relative overflow-hidden"
+                >
+                    {/* Decorative Background */}
+                    <div className="absolute -top-24 -right-24 w-48 h-48 bg-orange-500/10 rounded-full blur-3xl" />
+                    <div className="absolute -bottom-24 -left-24 w-48 h-48 bg-amber-500/10 rounded-full blur-3xl" />
+
+                    <div className={`w-20 h-20 mx-auto rounded-2xl flex items-center justify-center mb-6 ${result.passed ? 'bg-green-100 dark:bg-green-900/30 text-green-600' : 'bg-red-100 dark:bg-red-900/30 text-red-600'}`}>
+                        {result.passed ? <Trophy size={40} /> : <X size={40} />}
+                    </div>
+
+                    <h2 className="text-3xl font-extrabold mb-2 text-gray-900 dark:text-white">
+                        {result.passed ? "Test Passed!" : "Needs More Work"}
+                    </h2>
+                    
+                    <p className="text-gray-500 dark:text-gray-400 mb-8 max-w-xs mx-auto">
+                        {result.passed 
+                            ? "Congratulations! You've successfully demonstrated your mastery of this topic." 
+                            : "Don't give up! Review the course material and try again to earn your certificate."}
+                    </p>
+
+                    <div className="bg-gray-50/50 dark:bg-gray-800 rounded-3xl p-6 sm:p-8 mb-8 border border-gray-100 dark:border-gray-700 shadow-inner">
+                        <span className="text-[10px] font-black text-gray-400 dark:text-gray-500 uppercase tracking-[0.2em] block mb-2">Final Proficiency Score</span>
+                        <span className={`text-5xl sm:text-6xl font-black ${result.passed ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                            {result.score}%
+                        </span>
+                    </div>
+
+                    <div className="flex flex-col gap-3">
+                        {result.passed && result.certificate_url && (
+                            <a
+                                href={result.certificate_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="w-full flex items-center justify-center gap-3 px-8 py-4 bg-orange-500 text-white font-black text-xs uppercase tracking-widest rounded-2xl hover:bg-orange-600 transition-all shadow-xl shadow-orange-500/20 active:scale-[0.98]"
+                            >
+                                <Award size={20} />
+                                View Certificate
+                            </a>
+                        )}
+
+                        {result.passed && !result.certificate_url && (
+                            <>
+                                {result.certificate_request_status === 'PENDING' ? (
+                                    <div className="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-2xl flex items-center gap-3 text-left">
+                                        <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                                            <Clock size={20} />
+                                        </div>
+                                        <div>
+                                            <p className="text-xs font-bold text-amber-900 dark:text-amber-200">Certificate Request Under Review</p>
+                                            <p className="text-[11px] text-amber-700 dark:text-amber-400">An admin is verifying your assessment. Once approved, your certificate will appear in My Certificates.</p>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        onClick={handleOpenRequestModal}
+                                        className="w-full flex items-center justify-center gap-3 px-8 py-4 bg-orange-500 text-white font-black text-xs uppercase tracking-widest rounded-2xl hover:bg-orange-600 transition-all shadow-xl shadow-orange-500/20 active:scale-[0.98]"
+                                    >
+                                        <Award size={20} />
+                                        Request Official Certificate
+                                    </button>
+                                )}
+                            </>
+                        )}
+
+                        <button
+                            onClick={() => setResult(null)}
+                            className="w-full px-8 py-4 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-white font-black text-xs uppercase tracking-widest rounded-2xl hover:bg-gray-200 dark:hover:bg-gray-600 transition-all active:scale-[0.98]"
+                        >
+                            Return to Selection
+                        </button>
+                    </div>
+                </motion.div>
+
+                {/* Request Certificate Modal */}
+                {isRequestModalOpen && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+                        <div className="bg-white dark:bg-gray-800 rounded-3xl max-w-md w-full border border-gray-100 dark:border-gray-700 shadow-2xl overflow-hidden p-6">
+                            <div className="flex items-center gap-3 mb-4">
+                                <div className="w-10 h-10 rounded-xl bg-orange-500/10 text-orange-500 flex items-center justify-center">
+                                    <Award size={22} />
+                                </div>
+                                <div>
+                                    <h3 className="font-bold text-base text-gray-900 dark:text-white">Request Certificate</h3>
+                                    <p className="text-xs text-gray-400">Submit your verification request for admin approval.</p>
+                                </div>
+                            </div>
+
+                            <form onSubmit={handleSubmitCertificateRequest} className="space-y-4">
+                                <div>
+                                    <label className="text-xs font-bold text-gray-700 dark:text-gray-300 block mb-1">
+                                        Full Name to Print on Certificate *
+                                    </label>
+                                    <input
+                                        type="text"
+                                        required
+                                        value={requestFullName}
+                                        onChange={(e) => setRequestFullName(e.target.value)}
+                                        placeholder="e.g. Jane Doe"
+                                        className="w-full px-3.5 py-2.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl text-xs text-gray-900 dark:text-white focus:outline-none focus:border-orange-500"
+                                    />
+                                </div>
+
+                                <div>
+                                    <label className="text-xs font-bold text-gray-700 dark:text-gray-300 block mb-1">
+                                        Note for Reviewer (Optional)
+                                    </label>
+                                    <textarea
+                                        value={requestNotes}
+                                        onChange={(e) => setRequestNotes(e.target.value)}
+                                        rows={2}
+                                        placeholder="e.g. Completed all hands-on exercises."
+                                        className="w-full px-3.5 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl text-xs text-gray-900 dark:text-white focus:outline-none focus:border-orange-500"
+                                    />
+                                </div>
+
+                                <div className="p-3 bg-orange-50 dark:bg-orange-950/20 border border-orange-200 dark:border-orange-900/30 rounded-xl text-[11px] text-orange-800 dark:text-orange-300">
+                                    Your test score and watch history will be verified by the admin team before official issuance.
+                                </div>
+
+                                <div className="pt-2 flex items-center justify-end gap-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => setIsRequestModalOpen(false)}
+                                        className="px-4 py-2 text-xs font-bold text-gray-500 hover:bg-gray-100 rounded-xl"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="submit"
+                                        disabled={requestingCert}
+                                        className="px-5 py-2 rounded-xl font-bold text-xs text-white bg-orange-500 hover:bg-orange-600 shadow-md shadow-orange-500/20 transition-all active:scale-95"
+                                    >
+                                        {requestingCert ? "Submitting..." : "Submit Request"}
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
+    }
+    if (selectedHistoryQuiz) {
+        let questions = [];
+        try {
+            if (typeof selectedHistoryQuiz.questions === 'string') {
+                questions = JSON.parse(selectedHistoryQuiz.questions);
+            } else if (Array.isArray(selectedHistoryQuiz.questions)) {
+                questions = selectedHistoryQuiz.questions;
+            }
+        } catch (_) {
+            questions = [];
+        }
+        if (!Array.isArray(questions)) questions = [];
+
+        let userAnswers = [];
+        try {
+            if (typeof selectedHistoryQuiz.user_answers === 'string') {
+                userAnswers = JSON.parse(selectedHistoryQuiz.user_answers);
+            } else if (Array.isArray(selectedHistoryQuiz.user_answers)) {
+                userAnswers = selectedHistoryQuiz.user_answers;
+            }
+        } catch (_) {
+            userAnswers = [];
+        }
+        if (!Array.isArray(userAnswers)) userAnswers = [];
+
+        return (
+            <div className="bg-orange-50 dark:bg-gray-900 transition-colors duration-300">
+                <div className="max-w-4xl mx-auto">
+                    <div className="flex justify-between items-center mb-5 sm:mb-6 pt-1">
+                        <button
+                            onClick={handleCloseHistory}
+                            className="p-2 sm:p-2.5 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:text-orange-500 dark:hover:text-orange-400 rounded-xl border border-gray-200/80 dark:border-gray-700 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-700 transition-all active:scale-95 cursor-pointer flex items-center justify-center"
+                            title="Back to Quizzes"
+                            aria-label="Back to Quizzes"
+                        >
+                            <ArrowLeft size={18} className="text-gray-600 dark:text-gray-300" />
+                        </button>
+
+                        <button
+                            onClick={() => handleDeleteHistory(selectedHistoryQuiz.id)}
+                            className="p-2 sm:p-2.5 bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400 hover:bg-red-500 hover:text-white dark:hover:bg-red-500 dark:hover:text-white rounded-xl border border-red-200 dark:border-red-500/20 shadow-sm transition-all duration-200 active:scale-95 cursor-pointer flex items-center justify-center"
+                            title="Delete Attempt"
+                            aria-label="Delete Attempt"
+                        >
+                            <Trash2 size={18} />
+                        </button>
+                    </div>
+
+                    <motion.div 
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="bg-white dark:bg-gray-800 rounded-3xl shadow-xl border border-orange-100 dark:border-gray-700 overflow-hidden"
+                    >
+                        {/* Summary Header */}
+                        <div className="p-6 sm:p-8 border-b border-orange-100 dark:border-gray-700 bg-orange-50/30 dark:bg-gray-900/40">
+                            <div className="flex items-center gap-2 mb-3">
+                                <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${selectedHistoryQuiz.passed ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'}`}>
+                                    {selectedHistoryQuiz.passed ? "Certification Earned" : "Attempt Failed"}
+                                </span>
+                                <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${selectedHistoryQuiz.passed ? 'bg-green-50 text-green-600 border border-green-100' : 'bg-red-50 text-red-600 border border-red-100'}`}>
+                                    Score: {selectedHistoryQuiz.score}%
+                                </span>
+                            </div>
+                            <h2 className="text-base sm:text-lg font-bold text-gray-900 dark:text-white leading-snug">
+                                {selectedHistoryQuiz.video ? selectedHistoryQuiz.video.name : selectedHistoryQuiz.playlist?.name}
+                            </h2>
+                            <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5 flex items-center gap-2 font-medium">
+                                <Clock size={12} />
+                                Attempted on {formatAttemptDate(selectedHistoryQuiz.attempted_at, { month: 'long', day: 'numeric', year: 'numeric' })}
+                            </p>
+                        </div>
+
+                        {/* Question Breakdown */}
+                        <div className="p-6 sm:p-10 space-y-12">
+                            {questions.map((q, idx) => {
+                                const userAnswer = userAnswers[idx];
+                                const isCorrect = userAnswer === q.answer;
+
+                                return (
+                                    <div key={idx} className="relative">
+                                        <div className="flex gap-4 items-start mb-6">
+                                            <span className="flex-shrink-0 w-8 h-8 rounded-full bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400 flex items-center justify-center font-black text-xs">
+                                                {idx + 1}
+                                            </span>
+                                            <div className="text-sm sm:text-base font-bold text-gray-800 dark:text-white leading-relaxed flex-1 min-w-0">
+                                                <QuizMathText text={q.question} />
+                                            </div>
+                                        </div>
+
+                                        <div className="grid gap-3 sm:ml-12">
+                                            {q.options.map((opt, optIdx) => {
+                                                const isSelected = opt === userAnswer;
+                                                const isActualAnswer = opt === q.answer;
+
+                                                let borderStyle = "border-gray-100 dark:border-gray-700";
+                                                let bgStyle = "bg-gray-50/50 dark:bg-gray-800/30";
+                                                let textStyle = "text-gray-600 dark:text-gray-400";
+                                                let icon = null;
+
+                                                if (isSelected && isCorrect) {
+                                                    borderStyle = "border-green-500 dark:border-green-500/50";
+                                                    bgStyle = "bg-green-50 dark:bg-green-900/20";
+                                                    textStyle = "text-green-900 dark:text-green-300 font-bold";
+                                                    icon = <CheckCircle size={16} className="text-green-500" />;
+                                                } else if (isSelected && !isCorrect) {
+                                                    borderStyle = "border-red-500 dark:border-red-500/50";
+                                                    bgStyle = "bg-red-50 dark:bg-red-900/20";
+                                                    textStyle = "text-red-900 dark:text-red-300 font-bold";
+                                                    icon = <X size={16} className="text-red-500" />;
+                                                } else if (isActualAnswer) {
+                                                    borderStyle = "border-green-200 dark:border-green-900/30";
+                                                    bgStyle = "bg-green-50/30 dark:bg-green-900/10 shadow-inner";
+                                                    textStyle = "text-green-700 dark:text-green-400 font-bold italic";
+                                                    icon = <CheckCircle size={14} className="opacity-50" />;
+                                                }
+
+                                                return (
+                                                    <div key={optIdx} className={`p-3 px-4 rounded-xl border-2 flex items-center justify-between transition-all ${borderStyle} ${bgStyle}`}>
+                                                        <div className={`text-xs sm:text-sm font-medium flex-1 min-w-0 mr-3 ${textStyle}`}>
+                                                            <QuizMathText text={opt} />
+                                                        </div>
+                                                        <div className="flex items-center gap-2">
+                                                            {isSelected && <span className="text-[10px] font-black uppercase tracking-tighter opacity-70">Your Answer</span>}
+                                                            {!isSelected && isActualAnswer && <span className="text-[10px] font-black uppercase tracking-tighter opacity-70">Correct Answer</span>}
+                                                            {icon}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </motion.div>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="w-full max-w-[1360px] mx-auto px-3 sm:px-6 lg:px-8 pt-3 pb-28 space-y-6 relative z-10 selection:bg-orange-100 select-none">
+            
+            {/* Dotted mesh grid overlay matching dashboard style */}
+            <div className="absolute inset-0 z-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: 'radial-gradient(#f97316 1.5px, transparent 1.5px)', backgroundSize: '24px 24px' }} />
+
+            {/* ── Header (Desktop only - mobile uses TopBar subtabs) ── */}
+            <div className="hidden lg:flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-orange-500/10 border border-orange-200 dark:border-orange-500/20 flex items-center justify-center text-orange-500 shrink-0 shadow-[0_4px_12px_rgba(249,115,22,0.05)]">
+                    <Award size={20} className="animate-pulse" />
+                </div>
+                <div>
+                    <h1 className="text-xl font-black text-gray-900 dark:text-white tracking-tight leading-none">Quiz Center</h1>
+                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5 font-medium">Test your knowledge & earn credentials</p>
+                </div>
+            </div>
+
+            {/* ── Search Bar (Identical style, size, position to My Learning) ── */}
+            {showQuizSearch && (
+                <div className="space-y-3 relative z-10">
+                    <div className="relative group">
+                        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-orange-500 transition-colors" size={16} />
+                        <input
+                            type="text"
+                            placeholder="Search completed quizzes..."
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            className="w-full bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700/60 rounded-xl pl-10 pr-4 py-2.5 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition-all shadow-sm"
+                        />
+                    </div>
+                </div>
+            )}
+
+            <div className="space-y-4 sm:space-y-5 relative z-10">
+
+                {/* ── Section 1: Completed Playlists ────────────────────── */}
+                <section className="space-y-3.5">
+                    <div className="flex items-center justify-between mb-2">
+                        <h2 className="text-xs font-black text-gray-600 dark:text-gray-400 uppercase tracking-widest flex items-center gap-2">
+                            <Library className="w-4 h-4 text-orange-500" />
+                            Completed Quizzes
+                        </h2>
+                        <span className="text-[10px] font-black text-orange-600 dark:text-orange-400 bg-orange-500/5 dark:bg-orange-500/10 px-2.5 py-0.5 rounded-full border border-orange-500/10">
+                            {filteredPlaylists.length} total
+                        </span>
+                    </div>
+
+                    {filteredPlaylists.length === 0 ? (
+                        <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 text-center border border-gray-100 dark:border-gray-700 shadow-sm">
+                            <BookOpen className="w-8 h-8 text-gray-200 dark:text-gray-600 mx-auto mb-2" />
+                            <p className="text-xs text-gray-400 dark:text-gray-500 font-medium">No playlists ready for quizzes yet.</p>
+                        </div>
+                    ) : (
+                        <div className="relative -mx-3 sm:-mx-4">
+                            {/* Horizontal Scroll Container */}
+                            <div
+                                ref={playlistScrollRef}
+                                className="flex overflow-x-auto gap-3.5 pb-1 sm:pb-2 px-3 sm:px-4 snap-x snap-mandatory hide-scrollbar"
+                            >
+                                {filteredPlaylists.map((pl, plIdx) => {
+                                    // Soft color gradient mapping for subject card cards
+                                    const themes = [
+                                        { bg: "from-[#fff6f2]/90 to-white dark:from-gray-800 dark:to-gray-800", border: "border-[#feebe3] dark:border-gray-700", iconColor: "text-orange-500" },
+                                        { bg: "from-[#f6f5ff]/90 to-white dark:from-gray-800 dark:to-gray-800", border: "border-[#e8e6ff] dark:border-gray-700", iconColor: "text-[#4f46e5]" },
+                                        { bg: "from-[#f2faf6]/90 to-white dark:from-gray-800 dark:to-gray-800", border: "border-[#e0f4ea] dark:border-gray-700", iconColor: "text-[#059669]" },
+                                        { bg: "from-[#fffaf0]/90 to-white dark:from-gray-800 dark:to-gray-800", border: "border-[#fef0d5] dark:border-gray-700", iconColor: "text-amber-500" },
+                                        { bg: "from-[#f2f9fe]/90 to-white dark:from-gray-800 dark:to-gray-800", border: "border-[#e0f1fe] dark:border-gray-700", iconColor: "text-sky-500" }
+                                    ];
+                                    const theme = themes[plIdx % themes.length];
+
+                                    return (
+                                        <motion.div
+                                            key={pl.pid}
+                                            initial={{ opacity: 0, scale: 0.95 }}
+                                            animate={{ opacity: 1, scale: 1 }}
+                                            className="flex-shrink-0 w-[240px] snap-start"
+                                        >
+                                            <div className={`h-full bg-gradient-to-br ${
+                                                pl.is_eligible ? theme.bg : 'from-[#fafafa] to-white dark:from-gray-800 dark:to-gray-800'
+                                            } rounded-2xl border ${
+                                                pl.is_eligible ? theme.border : 'border-gray-100 dark:border-gray-700'
+                                            } overflow-hidden shadow-sm hover:shadow-md transition-all duration-300`}>
+                                                
+                                                <div className="p-4 flex flex-col justify-between h-[155px]">
+                                                    <div className="space-y-3">
+                                                        <div className="flex items-start justify-between gap-2.5">
+                                                            {/* White round-square icon card bubble */}
+                                                            <div className="w-10 h-10 bg-white dark:bg-gray-800 rounded-xl flex items-center justify-center shadow-[0_4px_12px_rgba(0,0,0,0.02)] border border-slate-100/35 dark:border-gray-700 shrink-0">
+                                                                <BookOpen size={16} className={pl.is_eligible ? theme.iconColor : "text-gray-400"} />
+                                                            </div>
+
+                                                            {/* Complete / Lock badge status */}
+                                                            <div>
+                                                                {pl.is_eligible ? (
+                                                                    <span className="inline-flex items-center gap-1 text-[8.5px] font-black text-green-600 dark:text-green-400 bg-green-50/80 dark:bg-green-950/20 px-2 py-0.5 rounded-md border border-green-100/50">
+                                                                        <CheckCircle size={8} /> READY
+                                                                    </span>
+                                                                ) : (
+                                                                    <span className="inline-flex items-center gap-1 text-[8.5px] font-black text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-gray-700/40 px-2 py-0.5 rounded-md border border-gray-150">
+                                                                        <Lock size={8} /> LOCKED
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+
+                                                        <div>
+                                                            <h3 className="font-bold text-gray-900 dark:text-white text-xs sm:text-[13px] tracking-tight leading-snug line-clamp-2">{pl.name}</h3>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100/50 dark:border-gray-800">
+                                                        <span className="text-[10px] text-slate-500 dark:text-slate-400 font-bold">
+                                                            Score: <span className="text-orange-500 font-extrabold">{pl.passed_video_quizzes}/{pl.total_videos}</span>
+                                                        </span>
+                                                        
+                                                        <button
+                                                            disabled={!pl.is_eligible}
+                                                            onClick={() => handleStartQuiz("playlist", pl.pid)}
+                                                            className={`shrink-0 flex items-center gap-0.5 px-3 py-1.5 rounded-lg font-black text-[9px] uppercase tracking-wider transition-all ${
+                                                                pl.is_eligible
+                                                                    ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-sm shadow-orange-500/10 hover:shadow-md hover:from-orange-600 hover:to-amber-600 active:scale-95 cursor-pointer'
+                                                                    : 'bg-gray-100 dark:bg-gray-700 text-gray-400 dark:text-gray-500 cursor-not-allowed'
+                                                            }`}
+                                                        >
+                                                            {pl.is_eligible ? "Start" : "Locked"}
+                                                            <ChevronRight size={10} strokeWidth={2.5} />
+                                                        </button>
+                                                    </div>
+                                                </div>
+
+                                                {/* Card bottom Progress bar indicator */}
+                                                <div className="h-1 bg-gray-100 dark:bg-gray-700/50 rounded-full overflow-hidden mx-4 mb-2">
+                                                    <motion.div
+                                                        initial={{ width: 0 }}
+                                                        animate={{ width: `${pl.total_videos > 0 ? (pl.passed_video_quizzes / pl.total_videos) * 100 : 0}%` }}
+                                                        transition={{ duration: 0.6, ease: "easeOut" }}
+                                                        className={`h-full rounded-full ${
+                                                            pl.total_videos > 0 && pl.passed_video_quizzes === pl.total_videos
+                                                                ? 'bg-gradient-to-r from-green-400 to-emerald-500'
+                                                                : 'bg-gradient-to-r from-orange-400 to-amber-500'
+                                                        }`}
+                                                    />
+                                                </div>
+                                            </div>
+                                        </motion.div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+                </section>
+
+                {/* ── Section 2: Attempt History ────────────────────────── */}
+                <section className="space-y-3 sm:space-y-3.5">
+                    <div className="flex items-center justify-between mb-2">
+                        <h2 className="text-xs font-black text-gray-600 dark:text-gray-400 uppercase tracking-widest flex items-center gap-2">
+                            <Clock className="w-4 h-4 text-orange-500" />
+                            Recent Attempts
+                        </h2>
+                        <span className="text-[10px] font-black text-orange-600 dark:text-orange-400 bg-orange-500/5 dark:bg-orange-500/10 px-2.5 py-0.5 rounded-full border border-orange-500/10">
+                            {history.length} attempts
+                        </span>
+                    </div>
+
+                    {history.length === 0 ? (
+                        <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 text-center border border-gray-100 dark:border-gray-700 shadow-sm">
+                            <Sparkles className="w-8 h-8 mx-auto mb-2 text-gray-200 dark:text-gray-600" />
+                            <p className="text-xs text-gray-400 dark:text-gray-500 font-medium">No quiz attempts yet. Take your first test!</p>
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                            {history.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage).map(hist => {
+                                const radius = 20;
+                                const strokeWidth = 3;
+                                const circumference = 2 * Math.PI * radius;
+                                const strokeDashoffset = circumference - (hist.score / 100) * circumference;
+                                const displayScore = hist.score % 1 === 0 ? hist.score : parseFloat(hist.score.toFixed(1));
+
+                                return (
+                                    <motion.div
+                                        key={hist.id}
+                                        initial={{ opacity: 0, y: 8 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        onClick={() => handleViewHistoryQuiz(hist)}
+                                        className="flex items-center gap-4 p-3.5 bg-white dark:bg-gray-800 rounded-2xl border border-orange-50/50 dark:border-gray-700/50 hover:border-orange-100 dark:hover:border-orange-950/50 hover:shadow-[0_8px_30px_rgba(249,115,22,0.03)] cursor-pointer transition-all duration-350 active:scale-[0.99] shadow-sm group"
+                                    >
+                                        {/* Type icon card bubble */}
+                                        <div className={`w-10 h-10 rounded-xl flex-shrink-0 flex items-center justify-center shadow-[0_2px_8px_rgba(0,0,0,0.01)] border border-slate-100/35 dark:border-gray-800 ${
+                                            hist.video
+                                                ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-500'
+                                                : 'bg-purple-50 dark:bg-purple-900/20 text-purple-500'
+                                        }`}>
+                                            {hist.video ? <Video size={16} /> : <Library size={16} />}
+                                        </div>
+
+                                        {/* Name + date */}
+                                        <div className="flex-1 min-w-0">
+                                            <p className="font-bold text-gray-900 dark:text-gray-200 text-xs sm:text-[13px] leading-snug line-clamp-2 group-hover:text-orange-500 transition-colors">
+                                                {hist.video ? hist.video.name : hist.playlist?.name}
+                                            </p>
+                                            <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1 font-medium leading-none">
+                                                {formatAttemptDate(hist.attempted_at, { month: 'short', day: 'numeric', year: 'numeric' })}
+                                            </p>
+                                        </div>
+
+                                        {/* Premium Circular Progress Score Chart */}
+                                        <div className="relative w-14 h-14 flex items-center justify-center shrink-0 select-none">
+                                            <svg viewBox="0 0 56 56" className="w-full h-full transform -rotate-90">
+                                                <circle
+                                                    cx="28"
+                                                    cy="28"
+                                                    r={radius}
+                                                    className="stroke-slate-100 dark:stroke-gray-700 fill-transparent"
+                                                    strokeWidth={strokeWidth}
+                                                />
+                                                <circle
+                                                    cx="28"
+                                                    cy="28"
+                                                    r={radius}
+                                                    className={`${
+                                                        hist.passed
+                                                            ? 'stroke-green-500'
+                                                            : 'stroke-orange-500'
+                                                    } fill-transparent transition-all duration-500`}
+                                                    strokeWidth={strokeWidth}
+                                                    strokeDasharray={circumference}
+                                                    strokeDashoffset={strokeDashoffset}
+                                                    strokeLinecap="round"
+                                                />
+                                            </svg>
+                                            <span className="absolute text-[9px] font-black text-slate-700 dark:text-gray-200 leading-none text-center">
+                                                {displayScore}%
+                                            </span>
+                                        </div>
+
+                                        {/* Actions: delete & loader */}
+                                        <div className="flex-shrink-0 flex items-center gap-1.5">
+                                            {loadingQuizDetails === hist.id ? (
+                                                <div className="w-7 h-7 rounded-lg flex items-center justify-center">
+                                                    <div className="animate-spin rounded-full h-3.5 w-3.5 border-2 border-orange-500 border-t-transparent" />
+                                                </div>
+                                            ) : (
+                                                <button
+                                                    onClick={e => { e.stopPropagation(); handleDeleteHistory(hist.id); }}
+                                                    className="w-7 h-7 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all flex items-center justify-center cursor-pointer"
+                                                    title="Delete"
+                                                >
+                                                    <Trash2 size={13} />
+                                                </button>
+                                            )}
+                                            <ChevronRight size={14} className="text-gray-300 group-hover:text-orange-400 transition-colors" />
+                                        </div>
+                                    </motion.div>
+                                );
+                            })}
+
+                            {/* Pagination */}
+                            {history.length > itemsPerPage && (
+                                <div className="md:col-span-2 flex items-center justify-center gap-1.5 pt-4 mt-2">
+                                    <button
+                                        disabled={currentPage === 1}
+                                        onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                                        className={`p-2 rounded-xl border text-sm transition-all ${
+                                            currentPage === 1
+                                                ? 'text-gray-250 dark:text-gray-600 border-gray-100 dark:border-gray-700 cursor-not-allowed'
+                                                : 'text-orange-500 border-orange-100 dark:border-gray-600 hover:bg-orange-50 dark:hover:bg-orange-900/20 active:scale-95 cursor-pointer'
+                                        }`}
+                                    >
+                                        <ArrowLeft size={16} />
+                                    </button>
+                                    {Array.from({ length: Math.ceil(history.length / itemsPerPage) }, (_, i) => i + 1).map(page => (
+                                        <button
+                                            key={page}
+                                            onClick={() => setCurrentPage(page)}
+                                            className={`w-8 h-8 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                                                currentPage === page
+                                                    ? 'bg-orange-500 text-white shadow-md shadow-orange-500/25'
+                                                    : 'text-gray-550 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'
+                                            }`}
+                                        >
+                                            {page}
+                                        </button>
+                                    ))}
+                                    <button
+                                        disabled={currentPage === Math.ceil(history.length / itemsPerPage)}
+                                        onClick={() => setCurrentPage(prev => Math.min(Math.ceil(history.length / itemsPerPage), prev + 1))}
+                                        className={`p-2 rounded-xl border text-sm transition-all ${
+                                            currentPage === Math.ceil(history.length / itemsPerPage)
+                                                ? 'text-gray-250 dark:text-gray-600 border-gray-100 dark:border-gray-700 cursor-not-allowed'
+                                                : 'text-orange-500 border-orange-100 dark:border-gray-600 hover:bg-orange-50 dark:hover:bg-orange-900/20 active:scale-95 cursor-pointer'
+                                        }`}
+                                    >
+                                        <ChevronRight size={16} />
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </section>
+
+                {/* ── Section 3: Keep Learning Promo Card ────────────────────────── */}
+                <motion.div
+                    initial={{ opacity: 0, y: 15 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="relative bg-[#fff8f5] dark:bg-orange-950/10 border border-orange-100 dark:border-orange-900/20 rounded-[2rem] p-5.5 sm:p-6 shadow-sm overflow-hidden flex flex-row items-center justify-between gap-5 sm:gap-6"
+                >
+                    <div className="flex items-center gap-4 text-left">
+                        {/* Thin outline circle for medal icon */}
+                        <div className="w-14 h-14 rounded-full border border-orange-200/60 dark:border-orange-900/30 flex items-center justify-center text-orange-500 shrink-0">
+                            <Award size={20} strokeWidth={2.5} className="text-orange-500" />
+                        </div>
+                        <div className="space-y-1">
+                            <h3 className="text-sm sm:text-base font-black text-gray-900 dark:text-white leading-tight">
+                                Keep Learning!
+                            </h3>
+                            <p className="text-[11px] sm:text-xs text-gray-500 dark:text-slate-400 font-bold leading-normal max-w-sm">
+                                Complete quizzes to earn certificates and track your progress.
+                            </p>
+                        </div>
+                    </div>
+                    
+                    {/* Decorative vector certificate matching screenshot layout */}
+                    <div className="shrink-0 w-20 h-16 relative opacity-95">
+                        <svg viewBox="0 0 64 48" className="w-full h-full text-orange-500/80 fill-current" xmlns="http://www.w3.org/2000/svg">
+                            {/* Certificate Border Frame */}
+                            <rect x="2" y="2" width="60" height="40" rx="4.5" fill="none" stroke="currentColor" strokeWidth="2.5" />
+                            {/* Certificate Text Lines */}
+                            <line x1="10" y1="12" x2="30" y2="12" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+                            <line x1="10" y1="18" x2="25" y2="18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+                            <line x1="10" y1="26" x2="44" y2="26" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                            <line x1="10" y1="32" x2="36" y2="32" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                            {/* Mini top-right stamp */}
+                            <circle cx="50" cy="10" r="2.5" stroke="currentColor" strokeWidth="1.5" fill="none" />
+                            
+                            {/* Ribbon seal at bottom-right corner */}
+                            <circle cx="50" cy="30" r="5.5" fill="#f97316" stroke="#f97316" strokeWidth="1" />
+                            <path d="M 46.5 34 L 43 45 L 48.5 41 L 54 45 L 50.5 34" fill="#f97316" />
+                        </svg>
+                    </div>
+                </motion.div>
+            </div>
+        </div>
+    );
+};
+
+export default Quiz;

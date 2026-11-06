@@ -1,0 +1,821 @@
+import { useState, useEffect, useMemo } from "react";
+import axios from "axios";
+import { useAuth } from "../../context/AuthContext";
+import { toast } from "react-hot-toast";
+import { motion, AnimatePresence } from "framer-motion";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { Play, Library, Video, Search, Trash2, Plus, Clock, ChevronRight, Sparkles, BookOpen, ArrowLeft, ArrowRight, CheckCircle, Compass, GraduationCap, BrainCircuit } from 'lucide-react';
+import { useModal } from "../../context/ModalContext";
+import apiCache from "../../utils/apiCache";
+
+function useDebouncedValue(value, delay = 500) {
+    const [debounced, setDebounced] = useState(value);
+
+    useEffect(() => {
+        const timer = setTimeout(() => setDebounced(value), delay);
+        return () => clearTimeout(timer);
+    }, [value, delay]);
+
+    return debounced;
+}
+
+const MyLearnings = () => {
+    const { token } = useAuth();
+    const { confirm } = useModal();
+    const navigate = useNavigate();
+    const [searchParams, setSearchParams] = useSearchParams();
+
+    const urlTab = searchParams.get('tab');
+    const initialTab = (urlTab && ['playlists', 'videos', 'roadmap'].includes(urlTab))
+        ? urlTab
+        : (localStorage.getItem("libraryActiveTab") || "playlists");
+
+    const [activeTab, setActiveTab] = useState(initialTab);
+
+    useEffect(() => {
+        if (urlTab && ['playlists', 'videos', 'roadmap'].includes(urlTab) && urlTab !== activeTab) {
+            setActiveTab(urlTab);
+        }
+    }, [urlTab]);
+
+    useEffect(() => {
+        localStorage.setItem("libraryActiveTab", activeTab);
+    }, [activeTab]);
+
+    const [searchQuery, setSearchQuery] = useState("");
+    const [page, setPage] = useState(1);
+    const debouncedSearch = useDebouncedValue(searchQuery);
+
+    const cacheKey = `user:learnings:page:${page}:${debouncedSearch}`;
+    const cachedData = token ? apiCache.get(cacheKey) : null;
+
+    const [videos, setVideos] = useState(cachedData?.videos?.results || []);
+    const [playlists, setPlaylists] = useState(cachedData?.playlists || []);
+    const [videoPagination, setVideoPagination] = useState(cachedData?.videos || {});
+    const [loading, setLoading] = useState(!cachedData);
+    const [hasInitialContent, setHasInitialContent] = useState(() => {
+        if (cachedData) {
+            return {
+                videos: (cachedData?.videos?.results || []).length > 0,
+                playlists: (cachedData?.playlists || []).length > 0
+            };
+        }
+        return null;
+    });
+    const [roadmapDaysUpdate, setRoadmapDaysUpdate] = useState({});
+    const [isSavingRoadmap, setIsSavingRoadmap] = useState({});
+    const [expandedRoadmap, setExpandedRoadmap] = useState(null);
+
+    useEffect(() => {
+        if (!token) return;
+        setPage(1); // reset page when search changes
+    }, [debouncedSearch]);
+
+    useEffect(() => {
+        if (!token) return;
+
+        const fetchLearnings = async () => {
+            apiCache.fetchSWR({
+                key: cacheKey,
+                fetcher: async () => {
+                    const res = await axios.post(
+                        `${import.meta.env.VITE_BACKEND_URL}/api/my-learnings/`,
+                        {
+                            idToken: token,
+                            page: page,
+                            searchQuery: debouncedSearch,
+                        }
+                    );
+                    return res.data;
+                },
+                onSuccess: (data) => {
+                    const vids = data?.videos?.results || [];
+                    const pls = data?.playlists || [];
+                    setVideos(vids);
+                    setVideoPagination(data?.videos || {});
+                    setPlaylists(pls);
+                    setLoading(false);
+                    if (!debouncedSearch) {
+                        setHasInitialContent({
+                            videos: vids.length > 0,
+                            playlists: pls.length > 0
+                        });
+                    }
+                },
+                onError: (err) => {
+                    console.error(err);
+                    if (!apiCache.get(cacheKey)) {
+                        toast.error("Failed to fetch learnings");
+                        setLoading(false);
+                    }
+                }
+            });
+        };
+
+        fetchLearnings();
+    }, [token, page, debouncedSearch, cacheKey]);
+
+    const handleVideoDelete = async (videoId) => {
+        if (!token) return;
+
+        const confirmed = await confirm({
+            title: "Delete Video",
+            message: "Are you sure you want to delete this video? This action cannot be undone.",
+            confirmText: "Delete",
+            type: "danger"
+        });
+
+        if (!confirmed) return;
+
+        try {
+            await axios.post(`${import.meta.env.VITE_BACKEND_URL}/api/delete-video/`, {
+                idToken: token,
+                videoId,
+            });
+            toast.success("Video deleted!");
+            apiCache.invalidate('learnings');
+            apiCache.invalidate('continue');
+
+            setVideos(prev => {
+                const nextVideos = prev.filter(v => v.vid !== videoId);
+                setHasInitialContent(h => h ? { ...h, videos: nextVideos.length > 0 } : null);
+                return nextVideos;
+            });
+
+            // Also remove from playlists if needed
+            setPlaylists(prev =>
+                prev.map(p => ({
+                    ...p,
+                    videos: p.videos.filter(v => v.vid !== videoId),
+                }))
+            );
+        } catch (err) {
+            console.error(err);
+            toast.error("Failed to delete video");
+        }
+    };
+
+    const handlePlaylistDelete = async (playlist, playlistId) => {
+        if (!token) return;
+
+        const confirmed = await confirm({
+            title: "Delete Playlist",
+            message: `Are you sure you want to delete "${playlist.name}"? All videos in this playlist will also be removed.`,
+            confirmText: "Delete Playlist",
+            type: "danger"
+        });
+
+        if (!confirmed) return;
+
+        try {
+            await axios.post(`${import.meta.env.VITE_BACKEND_URL}/api/delete-playlist/`, {
+                idToken: token,
+                playlistId,
+            });
+            toast.success("Playlist deleted!");
+            apiCache.invalidate('learnings');
+            apiCache.invalidate('continue');
+
+            setPlaylists(prev => {
+                const nextPlaylists = prev.filter(p => p.pid !== playlistId);
+                setHasInitialContent(h => h ? { ...h, playlists: nextPlaylists.length > 0 } : null);
+                return nextPlaylists;
+            });
+            setVideos(prev => prev.filter(v => !playlist.videos.some(pv => pv.vid === v.vid)));
+        } catch (err) {
+            console.error(err);
+            toast.error("Failed to delete playlist");
+        }
+    };
+
+    const getProgress = (videos) => {
+        if (!videos || videos.length === 0) return 0;
+        const totalVideos = videos.length;
+        const completedVideos = videos.filter(v => v.is_completed).length;
+        return Math.round((completedVideos / totalVideos) * 100);
+    };
+
+    const formatDuration = (seconds) => {
+        if (!seconds) return "0m";
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = seconds % 60;
+        if (h > 0) return `${h}h ${m}m`;
+        if (m > 0) return `${m}m ${s}s`;
+        return `${s}s`;
+    };
+
+    const getDailySchedule = (videos, days) => {
+        if (!videos || !days || days <= 0) return [];
+        
+        const totalDuration = videos.reduce((acc, v) => acc + (v.duration_seconds || 0), 0);
+        const targetPerDay = totalDuration / days;
+        
+        const schedule = [];
+        let currentDayVideos = [];
+        let currentDayDuration = 0;
+        let dayCount = 1;
+
+        for (let i = 0; i < videos.length; i++) {
+            const video = videos[i];
+            const videoDuration = video.duration_seconds || 0;
+
+            // If adding this video keeps us close to target, or it's the last video
+            // Or if we still have many days left to fill but only few videos
+            const isLastVideo = i === videos.length - 1;
+            
+            currentDayVideos.push(video);
+            currentDayDuration += videoDuration;
+
+            // Decision to close the day:
+            // 1. If we exceed target and it's not the last day
+            // 2. Or if we are the last video, close current day
+            if ((currentDayDuration >= targetPerDay && dayCount < days) || isLastVideo) {
+                schedule.push({
+                    day: dayCount,
+                    videos: currentDayVideos,
+                    totalDuration: currentDayDuration
+                });
+                currentDayVideos = [];
+                currentDayDuration = 0;
+                dayCount++;
+            }
+        }
+        
+        // Safety: If for some reason we created more than requested days (rare with this logic)
+        // or less, this sequential greedy approach keeps the order.
+        return schedule;
+    };
+
+
+
+    const tabs = [
+        { id: "playlists", label: "Playlists", icon: Library },
+        { id: "videos", label: "Videos", icon: Video },
+        { id: "roadmap", label: "Roadmap", icon: Sparkles },
+        { id: "quiz", label: "Quiz", icon: BrainCircuit }
+    ];
+
+    const hasTabContent = useMemo(() => {
+        if (hasInitialContent) {
+            if (activeTab === 'videos') return hasInitialContent.videos;
+            if (activeTab === 'playlists' || activeTab === 'roadmap') return hasInitialContent.playlists;
+        }
+        if (activeTab === 'videos') return videos.length > 0;
+        if (activeTab === 'playlists' || activeTab === 'roadmap') return playlists.length > 0;
+        return false;
+    }, [activeTab, hasInitialContent, videos.length, playlists.length]);
+
+    const showSearchBar = !loading && Boolean(searchQuery.trim().length > 0 || hasTabContent);
+
+    const handleTabClick = (tabId) => {
+        if (tabId === 'quiz') {
+            navigate('/dashboard/quiz');
+            return;
+        }
+        setActiveTab(tabId);
+        setSearchQuery("");
+        localStorage.setItem("libraryActiveTab", tabId);
+        setSearchParams(prev => {
+            const next = new URLSearchParams(prev);
+            next.set('tab', tabId);
+            return next;
+        }, { replace: true });
+    };
+
+    const handleUpdateRoadmap = async (pid, days) => {
+        if (!days || isNaN(days) || parseInt(days) <= 0) {
+            toast.error("Please enter a valid number of days.");
+            return;
+        }
+
+        setIsSavingRoadmap(prev => ({ ...prev, [pid]: true }));
+        try {
+            await axios.post(`${import.meta.env.VITE_BACKEND_URL}/api/set-playlist-goal/`, {
+                idToken: token,
+                pid: pid,
+                duration_goal: parseInt(days)
+            });
+            toast.success("Roadmap updated!");
+            
+            // Update local state to reflect change
+            setPlaylists(prev => prev.map(p => 
+                p.pid === pid ? { ...p, duration_goal: parseInt(days) } : p
+            ));
+        } catch (err) {
+            console.error(err);
+            toast.error("Failed to update roadmap");
+        } finally {
+            setIsSavingRoadmap(prev => ({ ...prev, [pid]: false }));
+        }
+    };
+
+    return (
+        <div className="w-full max-w-[1360px] mx-auto px-3 sm:px-6 lg:px-8 pt-3 pb-28 space-y-6">
+            {/* ── Compact Header (Desktop only - mobile uses TopBar subtabs) ── */}
+            <div className="hidden lg:flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-orange-500/10 border border-orange-200 dark:border-orange-500/20 flex items-center justify-center text-orange-500 shrink-0">
+                    <BookOpen size={18} />
+                </div>
+                <div className="flex-1 min-w-0">
+                    <h1 className="text-lg font-black text-gray-900 dark:text-white tracking-tight">My Learning</h1>
+                    <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">Your curated library & roadmaps</p>
+                </div>
+            </div>
+
+            {/* ── Search + Tab Bar ────────────────────────────────── */}
+            <div className={`space-y-3 ${!showSearchBar ? 'hidden lg:block' : ''}`}>
+                {/* Search - only visible when user has items in this tab or is searching */}
+                {showSearchBar && (
+                    <div className="relative group">
+                        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-orange-500 transition-colors" size={16} />
+                        <input
+                            type="text"
+                            placeholder={`Search ${activeTab}...`}
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            className="w-full bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700/60 rounded-xl pl-10 pr-4 py-2.5 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition-all shadow-sm"
+                        />
+                    </div>
+                )}
+                {/* Modern Segmented Tab Switcher - Desktop View (Mobile uses unified TopBar subtabs) */}
+                <div className="w-full sm:max-w-lg grid grid-cols-4 p-1 sm:p-1.5 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700/60 rounded-2xl shadow-sm gap-1 hidden lg:grid">
+                    {tabs.map((tab) => {
+                        const Icon = tab.icon;
+                        const isActive = activeTab === tab.id;
+                        return (
+                            <button
+                                key={tab.id}
+                                onClick={() => handleTabClick(tab.id)}
+                                className={`relative flex items-center justify-center gap-1.5 sm:gap-2 py-2 sm:py-2.5 px-2 sm:px-3 rounded-xl font-bold text-xs transition-all duration-300 select-none cursor-pointer z-10 ${
+                                    isActive
+                                        ? "text-white"
+                                        : "text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                                }`}
+                            >
+                                {isActive && (
+                                    <motion.div
+                                        layoutId="activeTabLibrary"
+                                        className="absolute inset-0 bg-gradient-to-r from-orange-500 to-amber-500 rounded-xl shadow-md shadow-orange-500/25 -z-10"
+                                        transition={{ type: "spring", stiffness: 450, damping: 35 }}
+                                    />
+                                )}
+                                <Icon size={15} strokeWidth={isActive ? 2.5 : 2} className="shrink-0" />
+                                <span className="font-extrabold tracking-tight truncate">{tab.label}</span>
+                            </button>
+                        );
+                    })}
+                </div>
+            </div>
+
+            <AnimatePresence mode="wait" initial={false}>
+                <motion.div
+                    key={activeTab}
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -4 }}
+                    transition={{ duration: 0.16, ease: "easeOut" }}
+                    className="transform-gpu"
+                >
+                {loading ? (
+                    <div className="w-full flex items-center justify-center py-20 min-h-[40vh]">
+                        <div className="flex flex-col items-center gap-4">
+                            <div className="w-10 h-10 border-4 border-orange-500 border-t-transparent rounded-full animate-spin"></div>
+                            <p className="text-gray-500 dark:text-slate-400 font-bold tracking-widest uppercase text-xs">Syncing your library...</p>
+                        </div>
+                    </div>
+                ) : !searchQuery && videos.length === 0 && playlists.length === 0 ? (
+                    <motion.div 
+                        initial={{ opacity: 0, scale: 0.98 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        transition={{ duration: 0.25, ease: "easeOut" }}
+                        className="bg-white dark:bg-gray-800 rounded-3xl sm:rounded-[32px] border border-gray-100 dark:border-gray-700/80 p-6 sm:p-10 flex flex-col items-center justify-center text-center shadow-[0_10px_35px_rgba(0,0,0,0.03)] dark:shadow-none max-w-2xl mx-auto my-4"
+                    >
+                        <div className="w-full max-w-[460px] sm:max-w-[520px] flex items-center justify-center -mt-2 mb-1 sm:mb-2 select-none pointer-events-none">
+                            <img
+                                src="/empty-state-banner.png"
+                                alt="No playlists or lessons yet"
+                                className="w-full h-auto object-contain max-h-[210px] sm:max-h-[240px]"
+                                loading="eager"
+                            />
+                        </div>
+                        <h3 className="text-xl sm:text-2xl font-black text-[#0B192C] dark:text-white tracking-tight leading-snug">
+                            Ready to start your learning journey?
+                        </h3>
+                        <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 font-medium max-w-md mx-auto mt-2 mb-6 sm:mb-7 leading-relaxed">
+                            Explore any topic, course, or paste a YouTube link to get instant AI notes and quizzes.
+                        </p>
+                        <button
+                            onClick={() => navigate('/dashboard', { state: { focusSearch: true } })}
+                            className="inline-flex items-center justify-center gap-2.5 sm:gap-3 px-6 sm:px-7 py-3 sm:py-3.5 rounded-full bg-gradient-to-r from-[#FF5100] via-[#FF6315] to-[#FF7730] hover:from-[#E64900] hover:via-[#F55900] hover:to-[#FF6B1A] active:scale-95 text-white font-extrabold text-[14px] sm:text-[15px] shadow-[0_10px_25px_-5px_rgba(255,81,0,0.38)] hover:shadow-[0_14px_32px_-4px_rgba(255,81,0,0.48)] border border-white/20 transition-all duration-200 cursor-pointer group select-none"
+                        >
+                            <div className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center shrink-0 shadow-inner">
+                                <Search className="w-3.5 h-3.5 text-white" strokeWidth={2.6} />
+                            </div>
+                            <span className="tracking-wide">Start Learning</span>
+                            <ArrowRight className="w-4 h-4 text-white/90 group-hover:translate-x-1 group-hover:text-white transition-transform duration-200 shrink-0" strokeWidth={2.6} />
+                        </button>
+                    </motion.div>
+                ) : (
+                    <>
+                        {activeTab === "videos" && (
+                            <div className="grid grid-cols-[repeat(auto-fill,minmax(350px,1fr))] gap-6">
+                                {videos.length === 0 ? (
+                                    <div className="col-span-full bg-white dark:bg-gray-800 rounded-3xl sm:rounded-[32px] border border-gray-100 dark:border-gray-700/80 p-6 sm:p-10 flex flex-col items-center justify-center text-center shadow-[0_10px_35px_rgba(0,0,0,0.03)] dark:shadow-none max-w-2xl mx-auto my-4">
+                                        <div className="w-full max-w-[460px] sm:max-w-[520px] flex items-center justify-center -mt-2 mb-1 sm:mb-2 select-none pointer-events-none">
+                                            <img
+                                                src="/empty-state-banner.png"
+                                                alt="No individual lessons yet"
+                                                className="w-full h-auto object-contain max-h-[210px] sm:max-h-[240px]"
+                                                loading="eager"
+                                            />
+                                        </div>
+                                        <h3 className="text-xl sm:text-2xl font-black text-[#0B192C] dark:text-white tracking-tight leading-snug">
+                                            Ready to add your first lesson?
+                                        </h3>
+                                        <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 font-medium max-w-md mx-auto mt-2 mb-6 sm:mb-7 leading-relaxed">
+                                            Explore single videos or search any topic to start learning with instant AI notes.
+                                        </p>
+                                        <button
+                                            onClick={() => navigate('/dashboard', { state: { focusSearch: true } })}
+                                            className="inline-flex items-center justify-center gap-2.5 sm:gap-3 px-6 sm:px-7 py-3 sm:py-3.5 rounded-full bg-gradient-to-r from-[#FF5100] via-[#FF6315] to-[#FF7730] hover:from-[#E64900] hover:via-[#F55900] hover:to-[#FF6B1A] active:scale-95 text-white font-extrabold text-[14px] sm:text-[15px] shadow-[0_10px_25px_-5px_rgba(255,81,0,0.38)] hover:shadow-[0_14px_32px_-4px_rgba(255,81,0,0.48)] border border-white/20 transition-all duration-200 cursor-pointer group select-none"
+                                        >
+                                            <div className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center shrink-0 shadow-inner">
+                                                <Search className="w-3.5 h-3.5 text-white" strokeWidth={2.6} />
+                                            </div>
+                                            <span className="tracking-wide">Start Learning</span>
+                                            <ArrowRight className="w-4 h-4 text-white/90 group-hover:translate-x-1 group-hover:text-white transition-transform duration-200 shrink-0" strokeWidth={2.6} />
+                                        </button>
+                                    </div>
+                                ) : (
+                                    videos.map((video, index) => (
+                                        <motion.div
+                                            key={video.vid}
+                                            initial={{ opacity: 0, y: 8 }}
+                                            animate={{ opacity: 1, y: 0 }}
+                                            transition={{ duration: 0.2, delay: Math.min(index * 0.015, 0.15), ease: "easeOut" }}
+                                            whileHover={{ y: -3 }}
+                                            whileTap={{ scale: 0.985 }}
+                                            className="group/card bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700/60 shadow-sm hover:shadow-md hover:shadow-orange-500/5 hover:border-orange-400 dark:hover:border-orange-500/60 transition-[border-color,box-shadow] duration-200 overflow-hidden flex flex-col relative transform-gpu"
+                                        >
+                                            {/* Delete Overlay */}
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleVideoDelete(video.vid);
+                                                }}
+                                                className="absolute top-3 right-3 z-20 p-2 bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white rounded-xl transition-all duration-300 backdrop-blur-md opacity-100 shadow-sm border border-red-500/10"
+                                            >
+                                                <Trash2 size={16} />
+                                            </button>
+
+                                            <div 
+                                                className="cursor-pointer flex flex-col h-full"
+                                                onClick={() => navigate(`/classroom/${video.vid}`)}
+                                            >
+                                                <div className="aspect-video bg-gray-105 dark:bg-gray-700/50 relative flex items-center justify-center overflow-hidden border-b border-gray-100 dark:border-gray-700/50 transition-transform duration-500 group-hover/card:scale-[1.05]">
+                                                    <img
+                                                        src={`https://img.youtube.com/vi/${video.vid}/hqdefault.jpg`}
+                                                        alt={video.name}
+                                                        className="w-full h-full object-cover"
+                                                    />
+                                                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/card:opacity-100 transition-opacity duration-300 flex items-center justify-center">
+                                                        <div className="w-12 h-12 bg-white/20 backdrop-blur-sm rounded-full flex items-center justify-center ring-2 ring-white/50 transform scale-75 group-hover/card:scale-100 transition-transform duration-300">
+                                                            <Play size={24} className="text-white fill-white ml-1" />
+                                                        </div>
+                                                    </div>
+                                                    {video.is_completed && (
+                                                        <div className="absolute top-3 left-3 bg-green-500 text-white text-[9px] font-black px-2.5 py-1 rounded-lg uppercase tracking-wider shadow-md shadow-green-500/20 z-10">
+                                                            Achieved
+                                                        </div>
+                                                    )}
+                                                </div>
+
+                                                <div className="p-4 pt-3 flex flex-col flex-1">
+                                                    <div className="flex items-center gap-1.5 mb-2">
+                                                        <div className="w-1.5 h-1.5 rounded-full bg-orange-500 shadow-[0_0_8px_rgba(249,115,22,0.5)]"></div>
+                                                        <span className="text-[9px] font-black text-orange-600 dark:text-orange-400 uppercase tracking-widest">Video Lesson</span>
+                                                    </div>
+                                                    
+                                                    <h3 className="font-bold text-gray-900 dark:text-white group-hover/card:text-orange-500 dark:group-hover/card:text-orange-400 text-sm mb-1.5 line-clamp-2 transition-colors duration-300 leading-snug flex-1">
+                                                        {video.name}
+                                                    </h3>
+
+                                                    <div className="mt-auto space-y-4">
+                                                        <div className="pt-3 border-t border-gray-50 dark:border-slate-800/80">
+                                                            <div className="flex items-center justify-between text-[10px] mb-1 font-black uppercase tracking-widest text-gray-405 dark:text-slate-500">
+                                                                <span>Progress</span>
+                                                                <span className="text-orange-600 dark:text-orange-400 group-hover/card:text-orange-500 transition-colors">{Math.round(video.watch_progress || 0)}%</span>
+                                                            </div>
+                                                            <div className="w-full bg-gray-100 dark:bg-gray-700 rounded-full h-1 overflow-hidden">
+                                                                <motion.div
+                                                                    initial={{ width: 0 }}
+                                                                    animate={{ width: `${Math.round(video.watch_progress || 0)}%` }}
+                                                                    className="h-full bg-gradient-to-r from-orange-500 to-amber-400 rounded-full shadow-[0_0_10px_rgba(249,115,22,0.3)] transition-all duration-1000"
+                                                                />
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </motion.div>
+                                    ))
+                                )}
+                            </div>
+                        )}
+
+                        {activeTab === "playlists" && (
+                    <div className="grid grid-cols-[repeat(auto-fill,minmax(350px,1fr))] gap-6">
+                        {playlists.length === 0 ? (
+                            <div className="col-span-full bg-white dark:bg-gray-800 rounded-3xl sm:rounded-[32px] border border-gray-100 dark:border-gray-700/80 p-6 sm:p-10 flex flex-col items-center justify-center text-center shadow-[0_10px_35px_rgba(0,0,0,0.03)] dark:shadow-none max-w-2xl mx-auto my-4">
+                                <div className="w-full max-w-[460px] sm:max-w-[520px] flex items-center justify-center -mt-2 mb-1 sm:mb-2 select-none pointer-events-none">
+                                    <img
+                                        src="/empty-state-banner.png"
+                                        alt="No playlists added yet"
+                                        className="w-full h-auto object-contain max-h-[210px] sm:max-h-[240px]"
+                                        loading="eager"
+                                    />
+                                </div>
+                                <h3 className="text-xl sm:text-2xl font-black text-[#0B192C] dark:text-white tracking-tight leading-snug">
+                                    Ready to start a full course?
+                                </h3>
+                                <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 font-medium max-w-md mx-auto mt-2 mb-6 sm:mb-7 leading-relaxed">
+                                    Explore playlists or paste a YouTube link to track lessons and generate quizzes.
+                                </p>
+                                <button
+                                    onClick={() => navigate('/dashboard', { state: { focusSearch: true } })}
+                                    className="inline-flex items-center justify-center gap-2.5 sm:gap-3 px-6 sm:px-7 py-3 sm:py-3.5 rounded-full bg-gradient-to-r from-[#FF5100] via-[#FF6315] to-[#FF7730] hover:from-[#E64900] hover:via-[#F55900] hover:to-[#FF6B1A] active:scale-95 text-white font-extrabold text-[14px] sm:text-[15px] shadow-[0_10px_25px_-5px_rgba(255,81,0,0.38)] hover:shadow-[0_14px_32px_-4px_rgba(255,81,0,0.48)] border border-white/20 transition-all duration-200 cursor-pointer group select-none"
+                                >
+                                    <div className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center shrink-0 shadow-inner">
+                                        <Search className="w-3.5 h-3.5 text-white" strokeWidth={2.6} />
+                                    </div>
+                                    <span className="tracking-wide">Start Learning</span>
+                                    <ArrowRight className="w-4 h-4 text-white/90 group-hover:translate-x-1 group-hover:text-white transition-transform duration-200 shrink-0" strokeWidth={2.6} />
+                                </button>
+                            </div>
+                        ) : (
+                            playlists.map((pl, index) => {
+                                const totalVideos = pl.videos?.length || 0;
+                                const completedVideos = pl.videos?.filter(v => v.is_completed)?.length || 0;
+                                const percentComplete = totalVideos ? Math.round((completedVideos / totalVideos) * 100) : 0;
+                                const thumbnail = pl.thumbnail || (pl.videos?.length > 0 ? `https://img.youtube.com/vi/${pl.videos[0].vid}/hqdefault.jpg` : "");
+
+                                return (
+                                    <motion.div
+                                        key={pl.pid}
+                                        initial={{ opacity: 0, y: 8 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        transition={{ duration: 0.2, delay: Math.min(index * 0.015, 0.15), ease: "easeOut" }}
+                                        whileHover={{ y: -3 }}
+                                        whileTap={{ scale: 0.985 }}
+                                        className="group/card bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700/60 shadow-sm hover:shadow-md hover:shadow-orange-500/5 hover:border-orange-400 dark:hover:border-orange-500/60 transition-[border-color,box-shadow] duration-200 overflow-hidden flex flex-col relative transform-gpu"
+                                    >
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                handlePlaylistDelete(pl, pl.pid);
+                                            }}
+                                            className="absolute top-3 right-3 z-20 p-2 bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white rounded-xl transition-all duration-300 backdrop-blur-md opacity-100 shadow-sm border border-red-500/10"
+                                        >
+                                            <Trash2 size={16} />
+                                        </button>
+
+                                        <div
+                                            className="cursor-pointer flex flex-col h-full"
+                                            onClick={() => navigate(`/dashboard/playlist/${pl.pid}`)}
+                                        >
+                                            {/* Stacked Thumbnail Effect */}
+                                            <div className="relative aspect-video overflow-hidden border-b border-gray-100 dark:border-gray-700/50 transition-transform duration-500 group-hover/card:scale-[1.05]">
+                                                {thumbnail ? (
+                                                    <img
+                                                        src={thumbnail}
+                                                        alt={pl.name}
+                                                        className="w-full h-full object-cover"
+                                                    />
+                                                ) : (
+                                                    <div className="w-full h-full bg-gray-100 dark:bg-gray-700/50 flex items-center justify-center">
+                                                        <Library size={44} className="text-orange-200 dark:text-slate-700" />
+                                                    </div>
+                                                )}
+                                                
+                                                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/card:opacity-100 transition-opacity duration-300 flex items-center justify-center">
+                                                    <div className="w-12 h-12 bg-white/20 backdrop-blur-sm rounded-full flex items-center justify-center ring-2 ring-white/50 transform scale-75 group-hover/card:scale-100 transition-transform duration-300">
+                                                        <Play size={24} className="text-white fill-white ml-1" />
+                                                    </div>
+                                                </div>
+
+                                                <div className="absolute bottom-3 right-3 bg-black/75 backdrop-blur-sm text-white text-[9px] font-black px-2 py-1 rounded-lg uppercase tracking-wider border border-white/5">
+                                                    {totalVideos} Lessons
+                                                </div>
+                                            </div>
+
+                                            <div className="p-4 pt-3 flex flex-col flex-1">
+                                                <div className="flex items-center gap-1.5 mb-2">
+                                                    <div className="w-1.5 h-1.5 rounded-full bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]"></div>
+                                                    <span className="text-[9px] font-black text-amber-600 dark:text-amber-400 uppercase tracking-widest">Mastery Path</span>
+                                                </div>
+
+                                                <h3 className="font-bold text-gray-900 dark:text-white text-sm mb-3 line-clamp-2 group-hover/card:text-orange-500 transition-colors duration-300 leading-snug flex-1">
+                                                    {pl.name}
+                                                </h3>
+
+                                                <div className="mt-auto">
+                                                    <div className="flex items-center justify-between text-[10px] mb-1 font-black uppercase tracking-widest text-gray-400 dark:text-slate-500">
+                                                        <span>Progress</span>
+                                                        <span className="text-orange-600 dark:text-orange-400 group-hover/card:font-bold transition-all">{percentComplete}%</span>
+                                                    </div>
+                                                    <div className="w-full bg-gray-100 dark:bg-gray-700 rounded-full h-1 overflow-hidden">
+                                                        <motion.div
+                                                            initial={{ width: 0 }}
+                                                            animate={{ width: `${percentComplete}%` }}
+                                                            className="h-full bg-gradient-to-r from-orange-500 to-amber-400 rounded-full shadow-[0_0_10px_rgba(249,115,22,0.3)] transition-all duration-1000"
+                                                        />
+                                                    </div>
+                                                    
+                                                    <div className="mt-3.5 flex items-center justify-between">
+                                                        <div className="flex items-center gap-1.5 bg-orange-50 dark:bg-orange-500/10 px-2.5 py-1 rounded-lg border border-orange-100 dark:border-orange-500/20">
+                                                            <div className="w-1.5 h-1.5 rounded-full bg-orange-500 shadow-[0_0_8px_rgba(249,115,22,0.5)] animate-pulse"></div>
+                                                            <span className="text-[9px] font-black text-orange-700 dark:text-orange-400 uppercase tracking-wider whitespace-nowrap">
+                                                                {completedVideos} / {totalVideos} COMPLETED
+                                                            </span>
+                                                        </div>
+                                                        <button className="text-[9px] font-black uppercase tracking-wider text-orange-500 flex items-center gap-0.5 group-hover/card:gap-1.5 transition-all">
+                                                            Resume <ChevronRight size={12} />
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </motion.div>
+                                );
+                            })
+                        )}
+                    </div>
+                )}
+
+                {!loading && activeTab === "roadmap" && (
+                    <div className="grid grid-cols-[repeat(auto-fill,minmax(350px,1fr))] gap-6">
+                        {playlists.length === 0 ? (
+                            <div className="col-span-full bg-white dark:bg-gray-800 rounded-3xl sm:rounded-[32px] border border-gray-100 dark:border-gray-700/80 p-6 sm:p-10 flex flex-col items-center justify-center text-center shadow-[0_10px_35px_rgba(0,0,0,0.03)] dark:shadow-none max-w-2xl mx-auto my-4">
+                                <div className="w-full max-w-[460px] sm:max-w-[520px] flex items-center justify-center -mt-2 mb-1 sm:mb-2 select-none pointer-events-none">
+                                    <img
+                                        src="/empty-state-banner.png"
+                                        alt="No roadmaps set up yet"
+                                        className="w-full h-auto object-contain max-h-[210px] sm:max-h-[240px]"
+                                        loading="eager"
+                                    />
+                                </div>
+                                <h3 className="text-xl sm:text-2xl font-black text-[#0B192C] dark:text-white tracking-tight leading-snug">
+                                    Ready to plan your roadmap?
+                                </h3>
+                                <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 font-medium max-w-md mx-auto mt-2 mb-6 sm:mb-7 leading-relaxed">
+                                    Add a playlist first, then customize your daily goal and target schedule.
+                                </p>
+                                <button
+                                    onClick={() => navigate('/dashboard', { state: { focusSearch: true } })}
+                                    className="inline-flex items-center justify-center gap-2.5 sm:gap-3 px-6 sm:px-7 py-3 sm:py-3.5 rounded-full bg-gradient-to-r from-[#FF5100] via-[#FF6315] to-[#FF7730] hover:from-[#E64900] hover:via-[#F55900] hover:to-[#FF6B1A] active:scale-95 text-white font-extrabold text-[14px] sm:text-[15px] shadow-[0_10px_25px_-5px_rgba(255,81,0,0.38)] hover:shadow-[0_14px_32px_-4px_rgba(255,81,0,0.48)] border border-white/20 transition-all duration-200 cursor-pointer group select-none"
+                                >
+                                    <div className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center shrink-0 shadow-inner">
+                                        <Search className="w-3.5 h-3.5 text-white" strokeWidth={2.6} />
+                                    </div>
+                                    <span className="tracking-wide">Start Learning</span>
+                                    <ArrowRight className="w-4 h-4 text-white/90 group-hover:translate-x-1 group-hover:text-white transition-transform duration-200 shrink-0" strokeWidth={2.6} />
+                                </button>
+                            </div>
+                        ) : (
+                            playlists.map((pl, index) => {
+                                const totalVideos = pl.videos?.length || 0;
+                                const completedVideos = pl.videos?.filter(v => v.is_completed)?.length || 0;
+                                const percentComplete = totalVideos ? Math.round((completedVideos / totalVideos) * 100) : 0;
+                                const thumbnail = pl.thumbnail || (pl.videos?.length > 0 ? `https://img.youtube.com/vi/${pl.videos[0].vid}/hqdefault.jpg` : "");
+                                const currentGoal = pl.duration_goal || "";
+                                const tempGoal = roadmapDaysUpdate[pl.pid] !== undefined ? roadmapDaysUpdate[pl.pid] : currentGoal;
+                                const videosPerDay = tempGoal ? Math.ceil(totalVideos / parseInt(tempGoal)) : 0;
+
+                                return (
+                                    <motion.div
+                                        key={`roadmap-${pl.pid}`}
+                                        initial={{ opacity: 0, y: 8 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        transition={{ duration: 0.2, delay: Math.min(index * 0.015, 0.15), ease: "easeOut" }}
+                                        whileHover={{ y: -3 }}
+                                        whileTap={{ scale: 0.985 }}
+                                        className="group/card bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700/60 shadow-sm hover:shadow-md hover:shadow-orange-500/5 hover:border-orange-400 dark:hover:border-orange-500/60 transition-[border-color,box-shadow] duration-200 overflow-hidden flex flex-col relative transform-gpu"
+                                    >
+                                        <div className="absolute top-3 right-3 z-20 pointer-events-none opacity-10 group-hover/card:opacity-20 group-hover/card:scale-125 transition-all duration-700">
+                                            <Sparkles size={48} className="text-orange-500" />
+                                        </div>
+
+                                        <div className="cursor-pointer flex flex-col h-full">
+                                            {/* Thumbnail Section */}
+                                            <div 
+                                                className="relative aspect-video overflow-hidden border-b border-gray-100 dark:border-gray-700/50 transition-transform duration-500 group-hover/card:scale-[1.05]"
+                                                onClick={() => navigate(`/dashboard/roadmap/${pl.pid}`)}
+                                            >
+                                                <img src={thumbnail} alt={pl.name} className="w-full h-full object-cover" />
+                                                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/card:opacity-100 transition-opacity duration-300 flex items-center justify-center">
+                                                    <div className="w-10 h-10 bg-white/20 backdrop-blur-sm rounded-full flex items-center justify-center ring-2 ring-white/50 transform scale-75 group-hover/card:scale-100 transition-transform duration-300">
+                                                        <Sparkles size={20} className="text-white fill-white" />
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            {/* Info Section */}
+                                            <div className="p-4 pt-3 flex flex-col flex-1 space-y-3">
+                                                <div>
+                                                    <div className="flex items-center gap-1.5 mb-1.5">
+                                                        <div className="w-1.5 h-1.5 rounded-full bg-orange-505 shadow-[0_0_8px_rgba(249,115,22,0.5)]"></div>
+                                                        <span className="text-[9px] font-black text-orange-600 dark:text-orange-400 uppercase tracking-widest">Active Roadmap</span>
+                                                    </div>
+                                                    
+                                                    <h3 
+                                                        className="font-bold text-gray-900 dark:text-white mb-1 line-clamp-2 group-hover/card:text-orange-500 transition-colors"
+                                                        onClick={() => navigate(`/dashboard/roadmap/${pl.pid}`)}
+                                                    >
+                                                        {pl.name}
+                                                    </h3>
+                                                    <span className="text-[9px] font-bold text-gray-405 dark:text-slate-500 uppercase tracking-wider">{totalVideos} Lessons Total</span>
+                                                </div>
+
+                                                {currentGoal ? (
+                                                    <div className="flex items-center justify-between text-[9px] font-black uppercase tracking-wider text-gray-400 dark:text-slate-500 bg-gray-50/50 dark:bg-gray-900/30 p-2.5 rounded-xl border border-gray-100 dark:border-gray-700/50">
+                                                        <div className="flex flex-col">
+                                                            <span className="text-orange-500 text-[8px]">Goal</span>
+                                                            <span className="text-xs text-gray-900 dark:text-white capitalize">{currentGoal} Days</span>
+                                                        </div>
+                                                        <div className="flex flex-col items-end">
+                                                            <span className="text-orange-500 text-[8px]">Pacing</span>
+                                                            <span className="text-xs text-gray-900 dark:text-white capitalize">{videosPerDay} Daily</span>
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <div className="flex items-center justify-center text-[9px] font-black uppercase tracking-wider text-gray-400 dark:text-slate-500 bg-gray-50/50 dark:bg-gray-900/30 p-2.5 rounded-xl border border-gray-100 dark:border-gray-700/50">
+                                                        <span>Study Goal Not Set</span>
+                                                    </div>
+                                                )}
+
+                                                <div className="mt-auto pt-1.5">
+                                                    <div className="flex items-center justify-between text-[10px] mb-1 font-black uppercase tracking-widest text-gray-400 dark:text-slate-500">
+                                                        <span>Mastery</span>
+                                                        <span className="text-orange-600 dark:text-orange-400 font-bold">{percentComplete}%</span>
+                                                    </div>
+                                                    <div className="w-full bg-gray-100 dark:bg-gray-700 rounded-full h-1 overflow-hidden">
+                                                        <motion.div
+                                                            initial={{ width: 0 }}
+                                                            animate={{ width: `${percentComplete}%` }}
+                                                            className="h-full bg-gradient-to-r from-orange-500 to-amber-400 shadow-[0_0_8px_rgba(249,115,22,0.3)] transition-all duration-1000"
+                                                        />
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </motion.div>
+                                );
+                            })
+                        )}
+                    </div>
+                )}
+                    </>
+                )}
+                </motion.div>
+            </AnimatePresence>
+
+            {/* Pagination for Videos */}
+            {activeTab === "videos" && (videoPagination.previous || videoPagination.next) && (
+                <div className="flex items-center justify-center gap-4 pt-8">
+                    <button
+                        disabled={!videoPagination.previous}
+                        onClick={() => setPage(page - 1)}
+                        className={`group flex items-center gap-2 px-8 py-3.5 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${
+                            !videoPagination.previous 
+                            ? "bg-gray-50 dark:bg-gray-800 text-gray-300 dark:text-slate-700 cursor-not-allowed" 
+                            : "bg-white dark:bg-gray-800 text-orange-500 border border-orange-100 dark:border-slate-700 hover:shadow-xl hover:-translate-y-0.5"
+                        }`}
+                    >
+                        <ArrowLeft size={18} className="group-hover:-translate-x-1 transition-transform" />
+                        Previous
+                    </button>
+                    
+                    <div className="w-12 h-12 flex items-center justify-center bg-orange-500 text-white rounded-2xl font-black shadow-lg shadow-orange-500/20">
+                        {page}
+                    </div>
+
+                    <button
+                        disabled={!videoPagination.next}
+                        onClick={() => setPage(page + 1)}
+                        className={`group flex items-center gap-2 px-8 py-3.5 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${
+                            !videoPagination.next 
+                            ? "bg-gray-50 dark:bg-gray-800 text-gray-300 dark:text-slate-700 cursor-not-allowed" 
+                            : "bg-orange-500 text-white shadow-lg shadow-orange-500/20 hover:shadow-orange-500/40 hover:-translate-y-0.5"
+                        }`}
+                    >
+                        Next
+                        <ChevronRight size={18} className="group-hover:translate-x-1 transition-transform" />
+                    </button>
+                </div>
+            )}
+        </div>
+    );
+};
+
+export default MyLearnings;

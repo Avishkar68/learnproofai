@@ -1,0 +1,661 @@
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../../context/AuthContext";
+import { useSocialMessageStore } from "../../store/socialMessageStore";
+import axios from "axios";
+import toast from "react-hot-toast";
+import { 
+    Search,
+    BookOpen, 
+    GraduationCap, 
+    Video, 
+    Users2,
+    Library, 
+    Share2, 
+    ArrowRight, 
+    ChevronLeft, 
+    ChevronRight,
+    FileText,
+    Radio,
+    Sparkles
+} from "lucide-react";
+import { motion } from "framer-motion";
+import { useRef } from "react";
+import apiCache from "../../utils/apiCache";
+import CalendarCard from "./CalendarCard";
+import CompletedSection from "./CompletedSection";
+import ContinueWatching from "./ContinueWatching";
+import VideosSection from "./VideosSection";
+import DailyTasksCard from "./DailyTasksCard";
+import ScreenTimeCard from "./ScreenTimeCard";
+import YourProgressCard from "./YourProgressCard";
+import DashboardHeroBanner from "./DashboardHeroBanner";
+
+const DashboardHome = () => {
+    const { token, user } = useAuth();
+    const navigate = useNavigate();
+    const totalUnreadCount = useSocialMessageStore((state) => state.totalUnreadCount);
+    const [isNewUser, setIsNewUser] = useState(false);
+    const [hasCheckedStatus, setHasCheckedStatus] = useState(false);
+
+    const userKey = user?.id || user?.uid || 'me';
+    const cachedLearnings = token ? apiCache.get(`user:dashboard:learnings:${userKey}`) : null;
+    const cachedContinue = token ? apiCache.get(`user:dashboard:continue:${userKey}`) : null;
+
+    const [playlists, setPlaylists] = useState(cachedLearnings?.playlists || []);
+    const [videos, setVideos] = useState(cachedLearnings?.videos?.results || []);
+    const [continueVideos, setContinueVideos] = useState(cachedContinue?.videos || []);
+    const [loadingLearnings, setLoadingLearnings] = useState(!cachedLearnings);
+    const [loadingContinue, setLoadingContinue] = useState(!cachedContinue);
+    const [fetchFailed, setFetchFailed] = useState(false);
+
+    const playlistContainerRef = useRef(null);
+
+    const scrollPlaylists = (direction) => {
+        if (playlistContainerRef.current) {
+            const { scrollLeft, clientWidth } = playlistContainerRef.current;
+            const scrollAmount = clientWidth * 0.8;
+            playlistContainerRef.current.scrollTo({
+                left: direction === 'left' ? scrollLeft - scrollAmount : scrollLeft + scrollAmount,
+                behavior: 'smooth'
+            });
+        }
+    };
+
+    const [referralCode, setReferralCode] = useState(user?.referralCode || "");
+
+    useEffect(() => {
+        if (!token) return;
+        apiCache.fetchSWR({
+            key: `user:referral:${userKey}`,
+            fetcher: async () => {
+                let data;
+                if (typeof window !== 'undefined' && window.Capacitor?.isNativePlatform?.()) {
+                    const { CapacitorHttp } = await import('@capacitor/core');
+                    const res = await CapacitorHttp.get({
+                        url: `${import.meta.env.VITE_BACKEND_URL || 'https://api.learnproofai.com'}/api/referrals/my-code`,
+                        headers: { Authorization: `Bearer ${token}` },
+                        params: { idToken: token, token }
+                    });
+                    data = res.data;
+                } else {
+                    const res = await axios.get(`${import.meta.env.VITE_BACKEND_URL}/api/referrals/my-code`, {
+                        headers: { Authorization: `Bearer ${token}` },
+                        params: { idToken: token, token }
+                    });
+                    data = res.data;
+                }
+                return data;
+            },
+            onSuccess: (data) => {
+                if (data?.success && data?.referralCode) {
+                    setReferralCode(data.referralCode);
+                }
+            },
+            onError: (err) => {
+                console.debug('Failed to fetch referral code:', err);
+            }
+        });
+    }, [token, userKey]);
+
+    const handleShare = async () => {
+        const origin = window.location.origin;
+        const shareUrl = referralCode ? `${origin}/?ref=${referralCode}` : origin;
+        const shareText = referralCode
+            ? `Hey! Join me on LearnProof AI to learn from any YouTube playlist with AI notes, quizzes, and live study rooms! Use my invite link: ${shareUrl}`
+            : `Join me on LearnProof AI — the smartest way to learn from YouTube videos and study notes! ${shareUrl}`;
+
+        const shareData = {
+            title: 'LearnProof AI - Master Any Subject',
+            text: shareText,
+            url: shareUrl,
+        };
+
+        if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
+            try {
+                await navigator.share(shareData);
+                return;
+            } catch (err) {
+                if (err.name !== 'AbortError') {
+                    navigator.clipboard.writeText(shareUrl);
+                    toast.success('Referral link copied to clipboard!');
+                }
+                return;
+            }
+        } else if (navigator.share) {
+            try {
+                await navigator.share(shareData);
+                return;
+            } catch (err) {
+                if (err.name !== 'AbortError') {
+                    navigator.clipboard.writeText(shareUrl);
+                    toast.success('Referral link copied to clipboard!');
+                }
+                return;
+            }
+        } else {
+            navigator.clipboard.writeText(shareUrl);
+            toast.success('Referral link copied to clipboard!');
+        }
+    };
+
+    useEffect(() => {
+        let active = true;
+        const userKey = user?.id || user?.uid || 'me';
+
+        const fetchLearnings = async () => {
+            await apiCache.fetchSWR({
+                key: `user:dashboard:learnings:${userKey}`,
+                fetcher: async () => {
+                    const res = await axios.post(`${import.meta.env.VITE_BACKEND_URL}/api/my-learnings/`, {
+                        idToken: token,
+                        page: 1,
+                        searchQuery: ""
+                    });
+                    return res.data;
+                },
+                onSuccess: (data) => {
+                    if (active) {
+                        setPlaylists(data?.playlists || []);
+                        setVideos(data?.videos?.results || []);
+                        setFetchFailed(false);
+                        setLoadingLearnings(false);
+                    }
+                },
+                onError: (err) => {
+                    console.warn("Dashboard learnings fetch error:", err);
+                    if (active && !apiCache.get(`user:dashboard:learnings:${userKey}`)) {
+                        setFetchFailed(true);
+                        setLoadingLearnings(false);
+                    }
+                }
+            });
+        };
+
+        const fetchContinueWatching = async () => {
+            await apiCache.fetchSWR({
+                key: `user:dashboard:continue:${userKey}`,
+                fetcher: async () => {
+                    const res = await axios.post(`${import.meta.env.VITE_BACKEND_URL}/api/continue-watch/`, {
+                        idToken: token
+                    });
+                    return res.data;
+                },
+                onSuccess: (data) => {
+                    if (active) {
+                        setContinueVideos(data?.videos || []);
+                        setFetchFailed(false);
+                        setLoadingContinue(false);
+                    }
+                },
+                onError: (err) => {
+                    console.warn("Dashboard continue watch fetch error:", err);
+                    if (active && !apiCache.get(`user:dashboard:continue:${userKey}`)) {
+                        setFetchFailed(true);
+                        setLoadingContinue(false);
+                    }
+                }
+            });
+        };
+
+        if (token) {
+            fetchLearnings();
+            fetchContinueWatching();
+        }
+
+        return () => {
+            active = false;
+        };
+    }, [token, userKey]);
+
+    // Check if new user after both finished loading
+    useEffect(() => {
+        if (!loadingLearnings && !loadingContinue && !fetchFailed) {
+            if (playlists.length === 0 && continueVideos.length === 0 && videos.length === 0) {
+                setIsNewUser(true);
+            }
+            setHasCheckedStatus(true);
+        }
+    }, [loadingLearnings, loadingContinue, fetchFailed, playlists, continueVideos, videos]);
+
+    if (fetchFailed) {
+        return (
+            <div className="p-6 h-[80vh] flex flex-col items-center justify-center text-center space-y-6">
+                <motion.div 
+                    initial={{ scale: 0.8, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    className="p-6 bg-red-500/10 rounded-full border border-red-500/20 text-red-500"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 animate-bounce" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                </motion.div>
+                <div className="space-y-2">
+                    <h2 className="text-2xl font-black text-gray-900 dark:text-white">Connection Issue</h2>
+                    <p className="text-gray-500 dark:text-slate-400 max-w-sm mx-auto font-medium">
+                        We had trouble connecting to the database. Please try reloading the page.
+                    </p>
+                </div>
+                <button 
+                    onClick={() => window.location.reload()}
+                    className="px-8 py-3 bg-orange-500 text-white rounded-2xl font-black text-sm hover:bg-orange-600 shadow-xl shadow-orange-500/30 transition-all"
+                >
+                    Reload Page
+                </button>
+            </div>
+        );
+    }
+
+
+
+    return (
+        <div className="flex flex-col lg:flex-row gap-6 lg:items-start max-w-[1360px] mx-auto px-0 md:px-8 py-3 lg:py-6 pb-24 md:pb-8 animate-in fade-in duration-500">
+            {/* Left column (Flexible) */}
+            <div className="flex-1 min-w-0 space-y-4">
+                {/* 1. HERO SEARCH BANNER */}
+                <DashboardHeroBanner user={user} />
+                {/* 2. SERVICES/FEATURES GRID - DESKTOP VIEW ONLY (3 Cards Side-by-Side as in Image 2) */}
+                <div className="hidden lg:grid grid-cols-3 gap-4">
+                    {/* Learning Hub Card */}
+                    <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => navigate('/dashboard/library')}
+                        className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700/80 p-5 flex flex-col justify-between shadow-sm hover:shadow-md transition-all group cursor-pointer select-none min-h-[170px]"
+                    >
+                        <div>
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-full bg-red-100/70 dark:bg-red-950/40 text-red-500 flex items-center justify-center shrink-0">
+                                    <svg viewBox="0 0 24 24" className="w-4.5 h-4.5 text-red-600 fill-red-600 shrink-0" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M23.498 6.163a3.003 3.003 0 0 0-2.11-2.107C19.522 3.5 12 3.5 12 3.5s-7.522 0-9.388.556a3.003 3.003 0 0 0-2.11 2.107C0 8.029 0 12 0 12s0 3.971.502 5.837a3.003 3.003 0 0 0 2.11 2.107C4.478 20.5 12 20.5 12 20.5s7.522 0 9.388-.556a3.003 3.003 0 0 0 2.11-2.107C24 15.971 24 12 24 12s0-3.971-.502-5.837z" />
+                                        <polygon points="9.545 15.568 15.818 12 9.545 8.432" fill="white" />
+                                    </svg>
+                                </div>
+                                <h3 className="text-base font-bold text-gray-900 dark:text-white leading-tight">
+                                    Learning Hub
+                                </h3>
+                            </div>
+                            <p className="text-xs text-gray-500 dark:text-gray-400 font-medium mt-3 leading-relaxed line-clamp-2">
+                                Learn from YouTube videos, study AI notes, and view roadmaps.
+                            </p>
+                        </div>
+                        <div className="flex items-center justify-between mt-4 pt-2">
+                            <span className="text-xs font-bold text-orange-600 dark:text-orange-400 bg-orange-100/70 dark:bg-orange-950/50 px-3 py-1 rounded-full">
+                                {playlists.length + videos.length > 0 ? `${playlists.length + videos.length} Courses` : "17 Courses"}
+                            </span>
+                            <div className="w-8 h-8 rounded-full bg-[#F97316] text-white flex items-center justify-center shadow-md shadow-orange-500/20 group-hover:scale-105 transition-transform shrink-0">
+                                <ArrowRight className="w-4 h-4 text-white" strokeWidth={2.5} />
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Live Rooms Card */}
+                    <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => navigate('/dashboard/live-rooms')}
+                        className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700/80 p-5 flex flex-col justify-between shadow-sm hover:shadow-md transition-all group cursor-pointer select-none min-h-[170px]"
+                    >
+                        <div>
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-full bg-blue-100/70 dark:bg-blue-950/40 text-blue-500 flex items-center justify-center shrink-0">
+                                    <svg className="w-5 h-5 text-blue-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M4.9 19.1C1.2 15.4 1.2 8.6 4.9 4.9" />
+                                        <path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.4" />
+                                        <circle cx="12" cy="12" r="2.2" fill="currentColor" />
+                                        <path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.4" />
+                                        <path d="M19.1 4.9c3.7 3.7 3.7 10.5 0 14.2" />
+                                    </svg>
+                                </div>
+                                <h3 className="text-base font-bold text-gray-900 dark:text-white leading-tight">
+                                    Live Rooms
+                                </h3>
+                            </div>
+                            <p className="text-xs text-gray-500 dark:text-gray-400 font-medium mt-3 leading-relaxed line-clamp-2">
+                                Join audio/video study rooms and interact with others in real-time.
+                            </p>
+                        </div>
+                        <div className="flex items-center justify-between mt-4 pt-2">
+                            <span className="text-xs font-bold text-blue-600 dark:text-blue-400 bg-blue-100/70 dark:bg-blue-950/50 px-3 py-1 rounded-full">
+                                Interact
+                            </span>
+                            <div className="w-8 h-8 rounded-full bg-[#2563EB] text-white flex items-center justify-center shadow-md shadow-blue-500/20 group-hover:scale-105 transition-transform shrink-0">
+                                <ArrowRight className="w-4 h-4 text-white" strokeWidth={2.5} />
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Social Hub Card */}
+                    <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => navigate('/dashboard/social')}
+                        className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700/80 p-5 flex flex-col justify-between shadow-sm hover:shadow-md transition-all group cursor-pointer select-none min-h-[170px]"
+                    >
+                        <div>
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-full bg-emerald-100/70 dark:bg-emerald-950/40 text-emerald-500 flex items-center justify-center shrink-0">
+                                    <Users2 className="w-5 h-5 text-emerald-600" strokeWidth={2.2} />
+                                </div>
+                                <h3 className="text-base font-bold text-gray-900 dark:text-white leading-tight">
+                                    Social Hub
+                                </h3>
+                            </div>
+                            <p className="text-xs text-gray-500 dark:text-gray-400 font-medium mt-3 leading-relaxed line-clamp-2">
+                                Interact with study partners, send messages, and share updates.
+                            </p>
+                        </div>
+                        <div className="flex items-center justify-between mt-4 pt-2">
+                            <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-100/70 dark:bg-emerald-950/50 px-3 py-1 rounded-full">
+                                Connect
+                            </span>
+                            <div className="w-8 h-8 rounded-full bg-[#059669] text-white flex items-center justify-center shadow-md shadow-emerald-500/20 group-hover:scale-105 transition-transform shrink-0">
+                                <ArrowRight className="w-4 h-4 text-white" strokeWidth={2.5} />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* 3. CONTINUE LEARNING SECTION (Mobile only) */}
+                <div className="block lg:hidden space-y-3 pb-2">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 sm:gap-2.5">
+                            <BookOpen className="w-5 h-5 sm:w-6 sm:h-6 text-[#F97316]" strokeWidth={2.3} />
+                            <h2 className="text-base sm:text-lg font-bold text-gray-900 dark:text-white tracking-tight">
+                                Continue learning
+                            </h2>
+                        </div>
+                        <button
+                            onClick={() => navigate('/dashboard/library')}
+                            className="text-[#F97316] hover:text-orange-600 font-bold text-xs sm:text-sm flex items-center gap-0.5 transition-colors cursor-pointer"
+                        >
+                            <span>View all</span>
+                            <ChevronRight size={16} strokeWidth={2.4} />
+                        </button>
+                    </div>
+
+                    {/* 2-Column Grid Side-by-Side */}
+                    <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
+                        {/* Learning Hub Card */}
+                        <div
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => navigate('/dashboard/library')}
+                            className="bg-[#FFFDFB] dark:bg-gray-800/90 border border-[#FDE8D7] dark:border-gray-700/80 rounded-2xl p-2.5 sm:p-3 flex items-center justify-between shadow-sm hover:shadow-md transition-all cursor-pointer group select-none min-h-[72px] sm:min-h-[78px]"
+                        >
+                            <div className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1">
+                                <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-[#FFF2E8] dark:bg-orange-950/40 flex items-center justify-center shrink-0">
+                                    <GraduationCap className="w-5 h-5 text-[#F97316]" strokeWidth={2.2} />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                    <h3 className="text-[13.5px] sm:text-[14px] font-bold text-gray-900 dark:text-white leading-tight">
+                                        Learning Hub
+                                    </h3>
+                                    <p className="text-[11px] sm:text-xs text-gray-500 dark:text-gray-400 font-medium leading-snug mt-0.5 line-clamp-2">
+                                        Courses, notes &amp; roadmaps
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="w-7 h-7 rounded-full bg-[#F97316] text-white flex items-center justify-center shadow-md shadow-orange-500/20 group-hover:scale-105 transition-transform shrink-0 ml-1.5">
+                                <ArrowRight className="w-3.5 h-3.5 text-white" strokeWidth={2.5} />
+                            </div>
+                        </div>
+
+                        {/* Live Rooms Card */}
+                        <div
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => navigate('/dashboard/live-rooms')}
+                            className="bg-[#F0F7FF] dark:bg-gray-800/90 border border-[#DBEAFE] dark:border-gray-700/80 rounded-2xl p-2.5 sm:p-3 flex items-center justify-between shadow-sm hover:shadow-md transition-all cursor-pointer group select-none min-h-[72px] sm:min-h-[78px]"
+                        >
+                            <div className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1">
+                                <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-[#E1EFFF] dark:bg-blue-950/40 flex items-center justify-center shrink-0">
+                                    <svg className="w-5 h-5 text-[#2563EB]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M4.9 19.1C1.2 15.4 1.2 8.6 4.9 4.9" />
+                                        <path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.4" />
+                                        <circle cx="12" cy="12" r="2.2" fill="currentColor" />
+                                        <path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.4" />
+                                        <path d="M19.1 4.9c3.7 3.7 3.7 10.5 0 14.2" />
+                                    </svg>
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                    <h3 className="text-[13.5px] sm:text-[14px] font-bold text-gray-900 dark:text-white leading-tight">
+                                        Live Rooms
+                                    </h3>
+                                    <p className="text-[11px] sm:text-xs text-gray-500 dark:text-gray-400 font-medium leading-snug mt-0.5 line-clamp-2">
+                                        Study together live
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="w-7 h-7 rounded-full bg-[#2563EB] text-white flex items-center justify-center shadow-md shadow-blue-500/20 group-hover:scale-105 transition-transform shrink-0 ml-1.5">
+                                <ArrowRight className="w-3.5 h-3.5 text-white" strokeWidth={2.5} />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* 4. LEARNING CONTENT SECTION: PLAYLISTS & INDIVIDUAL LESSONS */}
+                {loadingLearnings ? (
+                    <div className="space-y-4 animate-pulse">
+                        <div className="h-5 bg-gray-200 dark:bg-gray-700 rounded w-32"></div>
+                        <div className="flex gap-4 overflow-hidden">
+                            <div className="w-[210px] sm:w-[290px] h-[160px] bg-gray-100 dark:bg-gray-800 rounded-2xl shrink-0"></div>
+                            <div className="w-[210px] sm:w-[290px] h-[160px] bg-gray-100 dark:bg-gray-800 rounded-2xl shrink-0"></div>
+                        </div>
+                    </div>
+                ) : (playlists.length === 0 && videos.length === 0) ? (
+                    /* EMPTY STATE: Shown ONLY when user has neither playlists nor individual lessons */
+                    <div className="space-y-3">
+                        <div className="flex justify-between items-center">
+                            <div className="flex items-center gap-2 sm:gap-2.5">
+                                <Library className="w-5 h-5 sm:w-6 sm:h-6 text-[#F97316]" strokeWidth={2.3} />
+                                <h2 className="text-base sm:text-lg font-bold text-gray-900 dark:text-white tracking-tight">
+                                    Your Playlists
+                                </h2>
+                            </div>
+                        </div>
+
+                        <div className="bg-white dark:bg-gray-800 rounded-3xl sm:rounded-[32px] border border-gray-100 dark:border-gray-700/80 p-6 sm:p-10 flex flex-col items-center justify-center text-center shadow-[0_10px_35px_rgba(0,0,0,0.03)] dark:shadow-none max-w-2xl mx-auto my-2">
+                            <div className="w-full max-w-[460px] sm:max-w-[520px] flex items-center justify-center -mt-2 mb-1 sm:mb-2 select-none pointer-events-none">
+                                <img
+                                    src="/empty-state-banner.png"
+                                    alt="No playlists or lessons yet"
+                                    className="w-full h-auto object-contain max-h-[210px] sm:max-h-[240px]"
+                                    loading="eager"
+                                />
+                            </div>
+                            <h3 className="text-xl sm:text-2xl font-black text-[#0B192C] dark:text-white tracking-tight leading-snug">
+                                Ready to start your learning journey?
+                            </h3>
+                            <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 font-medium max-w-md mx-auto mt-2 mb-6 sm:mb-7 leading-relaxed">
+                                Explore any topic, course, or paste a YouTube link to get instant AI notes and quizzes.
+                            </p>
+                            <button
+                                onClick={() => {
+                                    const searchInput = document.querySelector('input[placeholder*="Search for courses"]');
+                                    if (searchInput) {
+                                        searchInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                        searchInput.focus();
+                                    } else {
+                                        navigate('/dashboard');
+                                    }
+                                }}
+                                className="inline-flex items-center justify-center gap-2.5 sm:gap-3 px-6 sm:px-7 py-3 sm:py-3.5 rounded-full bg-gradient-to-r from-[#FF5100] via-[#FF6315] to-[#FF7730] hover:from-[#E64900] hover:via-[#F55900] hover:to-[#FF6B1A] active:scale-95 text-white font-extrabold text-[14px] sm:text-[15px] shadow-[0_10px_25px_-5px_rgba(255,81,0,0.38)] hover:shadow-[0_14px_32px_-4px_rgba(255,81,0,0.48)] border border-white/20 transition-all duration-200 cursor-pointer group select-none"
+                            >
+                                <div className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center shrink-0 shadow-inner">
+                                    <Search className="w-3.5 h-3.5 text-white" strokeWidth={2.6} />
+                                </div>
+                                <span className="tracking-wide">Start Learning</span>
+                                <ArrowRight className="w-4 h-4 text-white/90 group-hover:translate-x-1 group-hover:text-white transition-transform duration-200 shrink-0" strokeWidth={2.6} />
+                            </button>
+                        </div>
+                    </div>
+                ) : (
+                    /* USER HAS CONTENT: Show Playlists if any */
+                    playlists.length > 0 && (
+                        <div className="space-y-3 relative group">
+                            <div className="flex justify-between items-center">
+                                <div className="flex items-center gap-2 sm:gap-2.5">
+                                    <Library className="w-5 h-5 sm:w-6 sm:h-6 text-[#F97316]" strokeWidth={2.3} />
+                                    <h2 className="text-base sm:text-lg font-bold text-gray-900 dark:text-white tracking-tight">
+                                        Your Playlists
+                                    </h2>
+                                </div>
+                                <button
+                                    onClick={() => navigate('/dashboard/library')}
+                                    className="text-[#F97316] hover:text-orange-600 font-bold text-xs sm:text-sm flex items-center gap-0.5 transition-colors cursor-pointer"
+                                >
+                                    <span>View all</span>
+                                    <ChevronRight size={16} strokeWidth={2.4} />
+                                </button>
+                            </div>
+
+                            <div className="relative">
+                                {/* Scroll buttons */}
+                                <button
+                                    onClick={() => scrollPlaylists('left')}
+                                    className="absolute -left-4 top-1/2 -translate-y-1/2 z-10 p-2 bg-white/90 dark:bg-gray-800/90 rounded-full shadow-lg border border-gray-100 dark:border-gray-700 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-white dark:hover:bg-gray-700 hidden md:flex items-center justify-center text-gray-600 dark:text-gray-300 cursor-pointer"
+                                >
+                                    <ChevronLeft size={20} />
+                                </button>
+
+                                <div
+                                    ref={playlistContainerRef}
+                                    className="flex overflow-x-auto gap-4 pb-2 snap-x snap-mandatory hide-scrollbar"
+                                >
+                                    {playlists.map((pl) => {
+                                        const totalVideos = pl.videos?.length || 0;
+                                        const completedVideos = pl.videos?.filter(v => v.is_completed)?.length || 0;
+                                        const percentComplete = totalVideos ? Math.round((completedVideos / totalVideos) * 100) : 0;
+                                        const thumbnail = pl.thumbnail || (pl.videos?.length > 0 ? `https://img.youtube.com/vi/${pl.videos[0].vid}/hqdefault.jpg` : "");
+
+                                        return (
+                                            <div
+                                                key={pl.pid}
+                                                onClick={() => navigate(`/dashboard/playlist/${pl.pid}`)}
+                                                className="flex-shrink-0 w-[210px] sm:w-[290px] bg-white dark:bg-gray-800 rounded-2xl shadow-sm hover:shadow-md transition-all cursor-pointer snap-start flex flex-col overflow-hidden group/item"
+                                            >
+                                                <div className="w-full aspect-video relative flex items-center justify-center overflow-hidden bg-gray-100 dark:bg-gray-700 shrink-0">
+                                                    {thumbnail ? (
+                                                        <img 
+                                                            src={thumbnail} 
+                                                            alt={pl.name} 
+                                                            className="w-full h-full object-cover animate-none"
+                                                        />
+                                                    ) : (
+                                                        <Library size={24} className="text-orange-300" />
+                                                    )}
+                                                    <div className="absolute bottom-1 right-1 bg-black/75 text-white text-[8px] font-black px-1.5 py-0.5 rounded-md">
+                                                        {totalVideos} Videos
+                                                    </div>
+                                                </div>
+                                                <div className="flex-1 flex flex-col justify-between min-w-0 p-3 pb-3.5">
+                                                    <h3 className="font-bold text-gray-855 dark:text-gray-100 text-[13px] leading-tight line-clamp-2 group-hover/item:text-orange-500 transition-colors">
+                                                        {pl.name}
+                                                    </h3>
+                                                    <div className="mt-2.5">
+                                                        <div className="flex items-center justify-between text-[10px] text-gray-400 dark:text-slate-400 font-bold mb-0.5">
+                                                            <span>Progress</span>
+                                                            <span>{percentComplete}%</span>
+                                                        </div>
+                                                        <div className="w-full bg-gray-105 dark:bg-gray-700 h-1 rounded-full overflow-hidden">
+                                                            <div
+                                                                className="bg-orange-500 h-full rounded-full transition-all duration-300"
+                                                                style={{ width: `${percentComplete}%` }}
+                                                            ></div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+
+                                <button
+                                    onClick={() => scrollPlaylists('right')}
+                                    className="absolute -right-4 top-1/2 -translate-y-1/2 z-10 p-2 bg-white/90 dark:bg-gray-800/90 rounded-full shadow-lg border border-gray-100 dark:border-gray-700 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-white dark:hover:bg-gray-700 hidden md:flex items-center justify-center text-gray-600 dark:text-gray-300 cursor-pointer"
+                                >
+                                    <ChevronRight size={20} />
+                                </button>
+                            </div>
+                        </div>
+                    )
+                )}
+
+                {/* 5. INDIVIDUAL VIDEOS & QUICK RESUME SECTION (Positioned directly below Your Playlists) */}
+                <div className="space-y-4">
+                    <VideosSection data={videos} loading={loadingLearnings} />
+                    <ContinueWatching videos={continueVideos} loading={loadingContinue} />
+                </div>
+
+                {/* 6. YOUR PROGRESS, STUDY ACTIVITY & SHARE SECTION (Mobile only - placed below learning content) */}
+                <div className="block lg:hidden space-y-3.5">
+                    {/* Your Progress Combined Card (Focus, Goals, Streak) */}
+                    <YourProgressCard />
+                    {/* Study Activity Calendar */}
+                    <CalendarCard />
+                    {/* Completed Videos List (Mobile only) */}
+                    <CompletedSection />
+                    {/* Mobile Share Card - with tight spacing to calendar */}
+                    <div className="bg-[#FFFBF7] dark:bg-gray-800/40 rounded-2xl border border-orange-200 dark:border-gray-700/50 p-3.5 flex flex-row items-center justify-between gap-3 shadow-sm hover:shadow-md transition-all">
+                        <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-9 h-9 rounded-xl bg-orange-100/70 dark:bg-orange-950/40 text-orange-500 flex items-center justify-center shrink-0">
+                                <Share2 size={18} />
+                            </div>
+                            <div className="min-w-0">
+                                <h3 className="font-bold text-gray-900 dark:text-white text-xs leading-tight">
+                                    Share LearnProof AI
+                                </h3>
+                                <p className="text-[10px] text-gray-500/80 dark:text-slate-400 font-medium mt-0.5 line-clamp-1">
+                                    {referralCode ? `Code: ${referralCode} • Invite friends & learn together` : 'Invite your friends and learn together.'}
+                                </p>
+                            </div>
+                        </div>
+                        <button
+                            onClick={handleShare}
+                            className="shrink-0 px-3.5 py-1.5 rounded-full bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs transition-all cursor-pointer shadow-sm shadow-orange-500/20 active:scale-95 flex items-center gap-1.5"
+                        >
+                            <Share2 size={12} /> Share
+                        </button>
+                    </div>
+                </div>
+
+                {/* 7. COMPLETED VIDEOS LIST (Desktop only) */}
+                <div className="hidden lg:block">
+                    <CompletedSection />
+                </div>
+
+                {/* 8. SHARE CARD SECTION (Desktop - at the very end of all main sections) */}
+                <div className="hidden lg:flex bg-[#FFFBF7] dark:bg-gray-800/40 rounded-2xl border border-orange-200 dark:border-gray-700/50 p-3.5 flex flex-row items-center justify-between gap-3 shadow-sm hover:shadow-md transition-all mt-4">
+                    <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-10 h-10 rounded-xl bg-orange-100/70 dark:bg-orange-950/40 text-orange-500 flex items-center justify-center shrink-0">
+                            <Share2 size={18} />
+                        </div>
+                        <div className="min-w-0">
+                            <h3 className="font-bold text-gray-900 dark:text-white text-sm leading-tight">
+                                Share LearnProof AI
+                            </h3>
+                            <p className="text-xs text-gray-500/80 dark:text-slate-400 font-medium mt-0.5 line-clamp-1">
+                                {referralCode ? `Code: ${referralCode} • Invite friends & learn together` : 'Invite your friends and learn together.'}
+                            </p>
+                        </div>
+                    </div>
+                    <button
+                        onClick={handleShare}
+                        className="shrink-0 px-4 py-2 rounded-full bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs transition-all cursor-pointer shadow-sm shadow-orange-500/20 active:scale-95 flex items-center gap-1.5"
+                    >
+                        <Share2 size={12} /> Share
+                    </button>
+                </div>
+            </div>
+
+            {/* Right column on desktop (Screen time, daily tasks, calendar) */}
+            <div className="hidden lg:flex w-[310px] shrink-0 flex-col gap-4">
+                <ScreenTimeCard />
+                <DailyTasksCard />
+                <CalendarCard />
+            </div>
+        </div> );
+};
+
+export default DashboardHome;

@@ -1,0 +1,19 @@
+const express = require('express');
+const router = express.Router();
+const classroomController = require('../controllers/classroom.controller');
+const { authMiddleware } = require('../middleware/auth');
+
+router.post('/video-detail', authMiddleware, classroomController.getClassroomVideo);
+router.post('/mark-completed', authMiddleware, classroomController.markVideoCompleted);
+router.post('/unmark-completed', authMiddleware, classroomController.unmarkVideoCompleted);
+router.post('/update-progress', authMiddleware, classroomController.updateProgress);
+router.post('/continue-watching', authMiddleware, classroomController.getContinueWatching);
+router.post('/completed-learnings', authMiddleware, classroomController.getCompletedLearnings);
+router.post('/generate-notes-pdf', authMiddleware, classroomController.generateNotesPdf);
+router.post('/prepare-notes-pdf', authMiddleware, classroomController.prepareNotesPdf);
+router.post('/cache-rendered-pdf', authMiddleware, classroomController.cacheRenderedPdf);
+router.get('/download-file/:downloadId/:fileName', classroomController.downloadNotesFile);
+
+module.exports = router;
+
+

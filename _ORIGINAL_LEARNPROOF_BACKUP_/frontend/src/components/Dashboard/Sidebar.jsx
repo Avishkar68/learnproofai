@@ -1,0 +1,261 @@
+import React, { useState, useEffect } from 'react';
+import { NavLink, useNavigate } from 'react-router-dom';
+import { Home, GraduationCap, Trophy, LogOut, BrainCircuit, Compass, Moon, Sun, X, FileText, HelpCircle, Menu, Users2, Radio, Gift, Crown } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
+import { useModal } from '../../context/ModalContext';
+import { useSocialMessageStore } from '../../store/socialMessageStore';
+import { useSocialFeedStore } from '../../store/socialFeedStore';
+import UserAvatar from '../Common/UserAvatar.jsx';
+import { motion } from 'framer-motion';
+
+const Sidebar = ({ isExpanded = true, onProfileClick, onClose, onMenuClick }) => {
+    const { user, logout } = useAuth();
+    const { confirm } = useModal();
+    const navigate = useNavigate();
+    const [isDarkMode, setIsDarkMode] = useState(false);
+    const totalUnreadCount = useSocialMessageStore((state) => state.totalUnreadCount);
+    const pendingFriendCount = useSocialFeedStore((state) => state.pendingFriendCount);
+    const socialUser = useSocialFeedStore((state) => state.socialUser);
+    const totalSocialCount = totalUnreadCount + pendingFriendCount;
+
+    // Initialize dark mode from localStorage or system preference
+    useEffect(() => {
+        const isDark = localStorage.getItem('theme') === 'dark';
+        setIsDarkMode(isDark);
+        if (isDark) {
+            document.documentElement.classList.add('dark');
+        } else {
+            document.documentElement.classList.remove('dark');
+        }
+    }, []);
+
+    const toggleTheme = () => {
+        if (isDarkMode) {
+            document.documentElement.classList.remove('dark');
+            localStorage.setItem('theme', 'light');
+            setIsDarkMode(false);
+        } else {
+            document.documentElement.classList.add('dark');
+            localStorage.setItem('theme', 'dark');
+            setIsDarkMode(true);
+        }
+    };
+
+    const navSections = [
+        {
+            title: 'Portal',
+            items: [
+                { name: 'Home', icon: <Home size={20} />, path: '/dashboard' }
+            ]
+        },
+        {
+            title: 'Learning Hub',
+            items: [
+                { name: 'My Learnings', shortName: 'Learnings', icon: <GraduationCap size={20} />, path: '/dashboard/library' },
+                { name: 'Quiz', icon: <BrainCircuit size={20} />, path: '/dashboard/quiz' },
+                { name: 'Ask My Notes', shortName: 'Notes', icon: <FileText size={20} />, path: '/dashboard/ask-my-notes' },
+                { name: 'Certificates', icon: <Trophy size={20} />, path: '/dashboard/certificates' },
+            ]
+        },
+        {
+            title: 'Social & Community',
+            items: [
+                { name: 'Live Rooms', shortName: 'Live Rooms', icon: <Radio size={20} />, path: '/dashboard/live-rooms' },
+                { name: 'Social Hub', shortName: 'Social', icon: <Users2 size={20} />, path: '/dashboard/social' },
+            ]
+        },
+        {
+            title: 'Support',
+            items: [
+                { name: 'Help & Support', shortName: 'Support', icon: <HelpCircle size={20} />, path: '/dashboard/support' }
+            ]
+        }
+    ];
+
+    const handleLogout = async () => {
+        const confirmed = await confirm({
+            title: "Sign Out",
+            message: "Are you sure you want to sign out of your account?",
+            confirmText: "Sign Out",
+            type: "danger"
+        });
+
+        if (confirmed) {
+            await logout();
+            navigate('/');
+        }
+    };
+
+    return (
+        <div className={`flex flex-col min-h-0 transition-all duration-300 overflow-hidden ${
+            isExpanded 
+                ? 'h-full w-full bg-white dark:bg-gray-800 border-r border-orange-100 dark:border-gray-700' 
+                : 'h-[calc(100%-1rem)] max-h-full my-2 w-[70px] bg-white/60 dark:bg-gray-950/60 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-[2.2rem] shadow-[0_12px_40px_-12px_rgba(0,0,0,0.15)] dark:shadow-[0_12px_40px_-12px_rgba(0,0,0,0.5)] mx-[10px]'
+        }`}>
+            <div className={`flex-1 min-h-0 overflow-y-auto overscroll-contain ${isExpanded ? 'py-4 px-3 sm:px-4 space-y-6' : 'py-2 px-1 space-y-1 hide-scrollbar'}`}>
+                <div className={`flex items-center ${isExpanded ? 'justify-between px-2 mb-2' : 'justify-center px-1 mb-1'}`}>
+                    {/* Desktop Menu Toggle (Replaces Logo) */}
+                    <button
+                        onClick={onMenuClick}
+                        className={`hidden lg:flex ${isExpanded ? 'p-2' : 'p-1.5'} rounded-xl text-gray-500 hover:bg-orange-50 dark:hover:bg-gray-700 transition cursor-pointer`}
+                        aria-label="Toggle Sidebar"
+                    >
+                        <Menu size={isExpanded ? 24 : 20} className="text-gray-700 dark:text-gray-300" />
+                    </button>
+ 
+                    {/* Mobile Close Button */}
+                    <button
+                        onClick={onClose}
+                        className="lg:hidden p-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                        aria-label="Close menu"
+                    >
+                        <X size={20} />
+                    </button>
+                </div>
+ 
+                {/* Navigation */}
+                <nav className={isExpanded ? "flex flex-col space-y-6" : "flex flex-col space-y-1"}>
+                    {navSections.map((section) => (
+                        <div key={section.title} className={isExpanded ? "flex flex-col space-y-1" : "flex flex-col space-y-1"}>
+                            {isExpanded && (
+                                <div className="text-[9px] font-black text-orange-600/70 dark:text-orange-400/80 uppercase tracking-widest px-3 mb-1.5 select-none">
+                                    {section.title}
+                                </div>
+                            )}
+                            <div className={isExpanded ? "flex flex-col space-y-1 lg:space-y-1.5" : "flex flex-col space-y-1"}>
+                                {section.items.map((item) => (
+                                    item.isExternal ? (
+                                        <a
+                                            key={item.name}
+                                            href={item.path}
+                                            title={!isExpanded ? item.name : undefined}
+                                            className={`flex ${
+                                                isExpanded ? 'flex-row items-center px-4 py-2 gap-3' : 'flex-col items-center justify-center py-1.5 px-1'
+                                            } rounded-lg transition-all text-gray-700 dark:text-gray-300 hover:bg-orange-50 dark:hover:bg-gray-700`}
+                                        >
+                                            <div className="flex-shrink-0">
+                                                {React.cloneElement(item.icon, {
+                                                    size: isExpanded ? 20 : 18
+                                                })}
+                                            </div>
+                                            {isExpanded ? (
+                                                <span className="text-base text-left transition-all whitespace-nowrap font-medium">
+                                                    {item.name}
+                                                </span>
+                                            ) : (
+                                                <span className="text-[8.5px] font-bold mt-0.5 tracking-wide leading-none text-center text-gray-500 dark:text-gray-400">
+                                                    {item.name}
+                                                </span>
+                                            )}
+                                        </a>
+                                    ) : (
+                                        <NavLink
+                                            key={item.name}
+                                            to={item.path}
+                                            end
+                                            title={!isExpanded ? item.name : undefined}
+                                            onClick={() => onClose && onClose()}
+                                             className={({ isActive }) =>
+                                                 `group relative flex ${
+                                                     isExpanded 
+                                                         ? 'flex-row items-center px-2.5 py-2 gap-3 rounded-xl' 
+                                                         : 'flex-col items-center justify-center py-1.5 px-1 rounded-xl'
+                                                 } transition-all duration-200 ${isActive
+                                                     ? isExpanded
+                                                         ? 'bg-orange-500/10 dark:bg-orange-500/15 text-orange-600 dark:text-orange-400 font-bold'
+                                                         : 'text-orange-600 dark:text-orange-400 font-bold'
+                                                     : isExpanded
+                                                         ? 'text-gray-750 dark:text-gray-300 hover:text-orange-600 dark:hover:text-orange-400 hover:bg-orange-500/5 dark:hover:bg-orange-500/10'
+                                                         : 'text-gray-500 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400'
+                                                 }`
+                                             }
+                                         >
+                                             {({ isActive }) => (
+                                                 <div
+                                                     className={`flex ${
+                                                         isExpanded ? 'flex-row items-center gap-3' : 'flex-col items-center justify-center'
+                                                     } w-full h-full relative active:scale-95 transition-transform duration-100`}
+                                                 >
+                                                     <div className={`relative flex items-center justify-center shrink-0 transition-all duration-200 ${
+                                                         isExpanded
+                                                             ? `w-8 h-8 rounded-lg ${isActive ? 'bg-orange-500 text-white shadow-xs shadow-orange-500/30' : 'bg-gray-100/80 dark:bg-gray-700/60 text-gray-500 dark:text-gray-400 group-hover:bg-orange-50 dark:group-hover:bg-gray-700 group-hover:text-orange-600'}`
+                                                             : `w-9 h-9 rounded-xl ${isActive ? 'bg-orange-500 text-white shadow-md shadow-orange-500/30' : 'bg-gray-100/60 dark:bg-gray-800/60 text-gray-500 dark:text-gray-400 group-hover:bg-orange-50 dark:group-hover:bg-gray-700 group-hover:text-orange-600'}`
+                                                     }`}>
+                                                         {React.cloneElement(item.icon, {
+                                                             size: isExpanded ? 16 : 18,
+                                                             strokeWidth: isActive ? 2.2 : 1.75,
+                                                             className: 'transition-transform'
+                                                         })}
+                                                         {item.name === 'Social Hub' && totalSocialCount > 0 && (
+                                                             <span className="absolute -top-1 -right-1 bg-orange-600 text-white text-[8px] font-black rounded-full min-w-[15px] h-[15px] px-0.5 flex items-center justify-center border-2 border-white dark:border-gray-800 z-20 shadow-xs">
+                                                                 {totalSocialCount > 99 ? '99+' : totalSocialCount}
+                                                             </span>
+                                                         )}
+                                                     </div>
+                                                     {isExpanded ? (
+                                                         <span className={`text-[13.5px] text-left transition-colors whitespace-nowrap ${isActive ? 'font-bold text-orange-600 dark:text-orange-400' : 'font-medium'}`}>
+                                                             {item.name}
+                                                         </span>
+                                                     ) : (
+                                                         <span className={`text-[8.5px] mt-0.5 tracking-tight leading-none text-center transition-all duration-200 ${isActive ? 'text-orange-600 dark:text-orange-400 font-bold' : 'text-gray-500 dark:text-gray-400 font-medium'}`}>
+                                                             {item.shortName || item.name}
+                                                         </span>
+                                                     )}
+                                                 </div>
+                                             )}
+                                         </NavLink>
+                                    )
+                                ))}
+                            </div>
+                        </div>
+                    ))}
+                </nav>
+            </div>
+ 
+            {/* Bottom Section: Profile & Actions - Always pinned and strictly visible */}
+            <div className={`shrink-0 mt-auto ${isExpanded ? 'py-3 px-3 sm:px-4 space-y-3 border-t border-orange-100 dark:border-gray-700' : 'py-2 px-1 space-y-1.5 border-t border-orange-100/60 dark:border-gray-800'} flex flex-col`}>
+                {user && (
+                    <div
+                        onClick={onProfileClick}
+                        className={`flex items-center ${isExpanded ? 'gap-3 px-4 py-3 border border-orange-100 dark:border-gray-700 bg-orange-50 dark:bg-gray-800' : 'justify-center py-1'} rounded-xl cursor-pointer hover:bg-orange-100 dark:hover:bg-gray-700 hover:shadow-sm transition-all`}
+                    >
+                        <UserAvatar 
+                            src={socialUser?.profilePicture || socialUser?.avatar || user.picture} 
+                            name={socialUser?.name || user.name} 
+                            className={isExpanded ? "w-10 h-10 rounded-full shadow-sm" : "w-8 h-8 rounded-full shadow-xs"} 
+                            textClassName={isExpanded ? "text-sm font-bold" : "text-xs font-bold"}
+                        />
+                        {isExpanded && (
+                            <div className="overflow-hidden">
+                                <p className="text-sm font-semibold text-gray-800 dark:text-gray-100 truncate">{socialUser?.name || user.name || 'User'}</p>
+                                <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{socialUser?.email || user.email}</p>
+                            </div>
+                        )}
+                    </div>
+                )}
+ 
+                <div className={`flex ${isExpanded ? 'flex-row items-center gap-3' : 'flex-col gap-1 items-center'}`}>
+                    <button
+                        onClick={handleLogout}
+                        className={`flex items-center justify-center ${isExpanded ? 'flex-1 gap-2 px-3 py-2.5 border border-transparent hover:border-red-100 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20' : 'p-1.5 text-red-500 hover:bg-red-500/10 dark:hover:bg-red-500/20'} rounded-xl transition-all font-medium cursor-pointer`}
+                        title="Logout"
+                    >
+                        <LogOut size={isExpanded ? 20 : 18} />
+                        {isExpanded && <span className="text-sm whitespace-nowrap">Logout</span>}
+                    </button>
+
+                    <button
+                        onClick={toggleTheme}
+                        className={`flex items-center justify-center ${isExpanded ? 'px-3 py-2.5 border border-gray-200 dark:border-gray-700' : 'p-1.5 hover:bg-gray-500/10'} rounded-xl text-gray-755 dark:text-gray-300 transition-all cursor-pointer`}
+                        title={isDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+                        aria-label="Toggle Dark Mode"
+                    >
+                        {isDarkMode ? <Sun size={isExpanded ? 20 : 18} className="text-amber-500" /> : <Moon size={isExpanded ? 20 : 18} className="text-indigo-600" />}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+export default Sidebar;

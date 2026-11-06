@@ -1,0 +1,461 @@
+const livekitService = require('../services/livekit.service');
+const datingPrisma = require('../utils/datingPrisma');
+const translate = require('google-translate-api-x');
+const datingController = require('./datingController');
+const redis = require('../lib/redis');
+
+// In-memory stage request queue: roomName -> Map(identity -> { identity, name, requestedAt })
+const stageRequestStore = new Map();
+// In-memory approved speakers: roomName -> Set of identities allowed on stage
+const approvedSpeakersStore = new Map();
+const delayedLiveKitDeletions = new Map();
+
+const getStageRequestMap = (roomName) => {
+  if (!stageRequestStore.has(roomName)) {
+    stageRequestStore.set(roomName, new Map());
+  }
+  return stageRequestStore.get(roomName);
+};
+
+const getApprovedSpeakers = (roomName) => {
+  if (!approvedSpeakersStore.has(roomName)) {
+    approvedSpeakersStore.set(roomName, new Set());
+  }
+  return approvedSpeakersStore.get(roomName);
+};
+
+const clearStageRequest = (roomName, identity) => {
+  getStageRequestMap(roomName).delete(String(identity));
+};
+
+const removeApprovedSpeaker = (roomName, identity) => {
+  if (approvedSpeakersStore.has(roomName)) {
+    approvedSpeakersStore.get(roomName).delete(String(identity));
+  }
+  clearStageRequest(roomName, identity);
+};
+
+const clearAllStageRequests = (roomName) => {
+  stageRequestStore.delete(roomName);
+  approvedSpeakersStore.delete(roomName);
+};
+
+/**
+ * GET /api/livekit/token?room=roomName
+ * Returns a LiveKit JWT token for the authenticated user
+ */
+const getToken = async (req, res) => {
+  try {
+    const { room, requestPublish } = req.query;
+    if (!room) return res.status(400).json({ error: 'room name is required' });
+
+    // Cancel any delayed room database and LiveKit deletions if the user reloads or returns
+    datingController.cancelDelayedRoomDeletion(room);
+    if (delayedLiveKitDeletions.has(room)) {
+      clearTimeout(delayedLiveKitDeletions.get(room));
+      delayedLiveKitDeletions.delete(room);
+      console.log(`[LiveKit] Cancelled delayed LiveKit deletion for room: ${room}`);
+    }
+
+    const userId = req.user.id;
+    const userName = req.user.name || req.user.email?.split('@')[0] || `User_${userId}`;
+
+    // 1. Fetch room config from database
+    const dbRoom = await datingPrisma.languageRoom.findUnique({
+      where: { roomName: room }
+    });
+
+    if (dbRoom && dbRoom.creatorId !== userId) {
+      if (dbRoom.isPrivate) {
+        let isInvited = false;
+        try {
+          const parsed = JSON.parse(dbRoom.invitedUserIds || '[]');
+          isInvited = Array.isArray(parsed) && parsed.map(Number).includes(Number(userId));
+        } catch (e) {}
+        if (!isInvited) {
+          return res.status(403).json({ error: 'Access denied: this is a private room' });
+        }
+      } else if (dbRoom.isFriendsOnly) {
+        const friendship = await datingPrisma.friendship.findFirst({
+          where: {
+            status: 'accepted',
+            OR: [
+              { senderId: dbRoom.creatorId, receiverId: userId },
+              { senderId: userId, receiverId: dbRoom.creatorId }
+            ]
+          }
+        });
+
+        if (!friendship) {
+          return res.status(403).json({ error: 'Access denied: this is a friends-only room' });
+        }
+      }
+    }
+
+    const isAdmin = dbRoom ? (dbRoom.creatorId === userId) : false;
+
+    // If host is entering a scheduled room early, trigger starting notifications immediately
+    if (isAdmin && dbRoom && dbRoom.scheduledFor && !dbRoom.isStartedNotificationSent) {
+      datingController.sendRoomStartedNotification(dbRoom, req.app.get('io')).catch(err => {
+        console.error('Failed early start notification on LiveKit token generation:', err);
+      });
+    }
+
+    // 2. Ensure room exists in LiveKit server (support up to 500 audience members for "unlimited" feel)
+    await livekitService.createRoom(room, 500);
+
+    // 3. Generate the JWT token (only room hosts start with canPublish = true; participants always join as listeners)
+    // Clear any past stage approval so leaving and re-entering the room always places non-hosts in the audience
+    if (!isAdmin) {
+      removeApprovedSpeaker(room, userId);
+    }
+    const canPublish = Boolean(isAdmin);
+    const token = await livekitService.generateToken(room, userId, userName, isAdmin, canPublish);
+
+    return res.json({
+      token,
+      serverUrl: livekitService.LIVEKIT_WS,
+      room,
+      identity: String(userId),
+    });
+  } catch (err) {
+    console.error('LiveKit token error:', err);
+    return res.status(500).json({ error: 'Failed to generate token' });
+  }
+};
+
+/**
+ * GET /api/livekit/rooms
+ * Returns list of active LiveKit rooms
+ */
+const getRooms = async (req, res) => {
+  try {
+    const rooms = await livekitService.listRooms();
+    return res.json({ rooms });
+  } catch (err) {
+    console.error('LiveKit list rooms error:', err);
+    return res.status(500).json({ error: 'Failed to list rooms' });
+  }
+};
+
+const deleteRoom = async (req, res) => {
+  try {
+    const { roomName } = req.params;
+    const source = req.query.source;
+
+    if (source === 'unload') {
+      // Never delete LiveKit rooms on browser reload/unload events
+      return res.json({ success: true, message: 'Unload deletion ignored to prevent premature room termination' });
+    }
+
+    // Normal direct end (from explicit UI action)
+    if (delayedLiveKitDeletions.has(roomName)) {
+      clearTimeout(delayedLiveKitDeletions.get(roomName));
+      delayedLiveKitDeletions.delete(roomName);
+    }
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`live_room_${roomName}`).emit('room_ended');
+    }
+
+    await livekitService.deleteRoom(roomName);
+    clearAllStageRequests(roomName);
+
+    try {
+      await redis.del(`live_room:wb:${roomName}`);
+      await redis.del(`live_room:chat:${roomName}`);
+      await redis.del(`live_room:settings:${roomName}`);
+    } catch (_) {}
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('LiveKit delete room error:', err);
+    return res.status(500).json({ error: 'Failed to delete room' });
+  }
+};
+
+/**
+ * GET /api/livekit/rooms/:roomName/participants
+ * Returns participants in a room
+ */
+const getParticipants = async (req, res) => {
+  try {
+    const { roomName } = req.params;
+    const participants = await livekitService.listParticipants(roomName);
+    return res.json({ participants });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to get participants' });
+  }
+};
+
+/**
+ * DELETE /api/livekit/rooms/:roomName/participants/:identity
+ * Kick/remove a participant from a room (Creator only)
+ */
+const kickParticipant = async (req, res) => {
+  try {
+    const { roomName, identity } = req.params;
+    const userId = req.user.id;
+
+    // Retrieve room from SQLite database to check creator permission
+    const dbRoom = await datingPrisma.languageRoom.findUnique({
+      where: { roomName }
+    });
+
+    if (!dbRoom) {
+      return res.status(404).json({ error: 'Room configuration not found in database' });
+    }
+
+    if (dbRoom.creatorId !== userId) {
+      return res.status(403).json({ error: 'Only the room creator can kick participants' });
+    }
+
+    await livekitService.kickParticipant(roomName, identity);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Failed to kick participant:', err);
+    return res.status(500).json({ error: 'Failed to kick participant from room' });
+  }
+};
+
+/**
+ * POST /api/livekit/rooms/:roomName/participants/:identity/promote
+ * Promote a listener to speaker (Creator only) - Enforces max 6 speakers limit
+ */
+const promoteParticipant = async (req, res) => {
+  try {
+    const { roomName, identity } = req.params;
+    const userId = req.user.id;
+
+    // Check creator permission from SQLite database
+    const dbRoom = await datingPrisma.languageRoom.findUnique({
+      where: { roomName }
+    });
+
+    if (!dbRoom) {
+      return res.status(404).json({ error: 'Room not found' });
+    }
+
+    if (dbRoom.creatorId !== userId) {
+      return res.status(403).json({ error: 'Only the room host can promote participants' });
+    }
+
+    // Fetch active participants to count existing speakers (max 6)
+    const activeParticipants = await livekitService.listParticipants(roomName);
+    const activeSpeakersCount = activeParticipants.filter(
+      p => p.permission?.canPublish || p.permissions?.canPublish
+    ).length;
+
+    if (activeSpeakersCount >= 6) {
+      return res.status(400).json({ 
+        error: 'Stage is full. Maximum of 6 speakers allowed on stage. Please demote an active speaker first.' 
+      });
+    }
+
+    // Set canPublish = true with metadata role in LiveKit server
+    await livekitService.updateParticipantPermissions(roomName, identity, {
+      canPublish: true,
+      canSubscribe: true,
+      canPublishData: true,
+    }, JSON.stringify({ role: 'speaker' }));
+
+    getApprovedSpeakers(roomName).add(String(identity));
+    clearStageRequest(roomName, identity);
+
+    return res.json({ success: true, message: 'Participant promoted to speaker' });
+  } catch (err) {
+    console.error('Failed to promote participant:', err);
+    return res.status(500).json({ error: 'Failed to promote participant' });
+  }
+};
+
+/**
+ * POST /api/livekit/rooms/:roomName/participants/:identity/demote
+ * Demote a speaker back to audience (Creator only)
+ */
+const demoteParticipant = async (req, res) => {
+  try {
+    const { roomName, identity } = req.params;
+    const userId = req.user.id;
+
+    // Check creator permission from SQLite database
+    const dbRoom = await datingPrisma.languageRoom.findUnique({
+      where: { roomName }
+    });
+
+    if (!dbRoom) {
+      return res.status(404).json({ error: 'Room not found' });
+    }
+
+    // Allow demotion if the caller is the host OR if the caller is demoting themselves
+    const isSelfDemote = String(userId) === identity;
+    const isHost = dbRoom.creatorId === userId;
+
+    if (!isHost && !isSelfDemote) {
+      return res.status(403).json({ error: 'Only the room host or the participant themselves can demote stage speakers' });
+    }
+
+    // Demote participant: set canPublish false for media, keep canPublishData true, and set role: 'listener'
+    await livekitService.updateParticipantPermissions(roomName, identity, {
+      canPublish: false,
+      canSubscribe: true,
+      canPublishData: true,
+    }, JSON.stringify({ role: 'listener' }));
+
+    getApprovedSpeakers(roomName).delete(String(identity));
+
+    return res.json({ success: true, message: 'Participant demoted to listener' });
+  } catch (err) {
+    console.error('Failed to demote participant:', err);
+    return res.status(500).json({ error: 'Failed to demote participant' });
+  }
+};
+
+/**
+ * POST /api/livekit/rooms/:roomName/stage-requests
+ * Listener submits a request to join the stage
+ */
+const submitStageRequest = async (req, res) => {
+  try {
+    const { roomName } = req.params;
+    const userId = String(req.user.id);
+    const userName = req.user.name || 'User';
+
+    const dbRoom = await datingPrisma.languageRoom.findUnique({ where: { roomName } });
+    if (!dbRoom) return res.status(404).json({ error: 'Room not found' });
+    if (String(dbRoom.creatorId) === userId) {
+      return res.status(400).json({ error: 'Host cannot request the stage' });
+    }
+
+    getStageRequestMap(roomName).set(userId, {
+      identity: userId,
+      name: userName,
+      requestedAt: Date.now(),
+    });
+
+    // Real-time Push via Socket.IO directly to the live room
+    try {
+      const io = req.app.get('io');
+      if (io) {
+        const payload = {
+          roomName,
+          identity: userId,
+          name: userName,
+        };
+        io.to(`live_room_${roomName}`).emit('speak_request', payload);
+      }
+    } catch (sockErr) {
+      console.warn('Socket stage request emit error:', sockErr.message);
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Failed to submit stage request:', err);
+    return res.status(500).json({ error: 'Failed to submit stage request' });
+  }
+};
+
+/**
+ * GET /api/livekit/rooms/:roomName/stage-requests
+ * Host fetches pending stage requests
+ */
+const getStageRequests = async (req, res) => {
+  try {
+    const { roomName } = req.params;
+    const userId = req.user.id;
+
+    const dbRoom = await datingPrisma.languageRoom.findUnique({ where: { roomName } });
+    if (!dbRoom) return res.status(404).json({ error: 'Room not found' });
+    if (dbRoom.creatorId !== userId) {
+      return res.status(403).json({ error: 'Only the room host can view stage requests' });
+    }
+
+    const requests = Array.from(getStageRequestMap(roomName).values());
+    return res.json({ requests });
+  } catch (err) {
+    console.error('Failed to fetch stage requests:', err);
+    return res.status(500).json({ error: 'Failed to fetch stage requests' });
+  }
+};
+
+/**
+ * DELETE /api/livekit/rooms/:roomName/stage-requests/:identity
+ * Host dismisses a stage request (or after promote)
+ */
+const dismissStageRequest = async (req, res) => {
+  try {
+    const { roomName, identity } = req.params;
+    const userId = req.user.id;
+
+    const dbRoom = await datingPrisma.languageRoom.findUnique({ where: { roomName } });
+    if (!dbRoom) return res.status(404).json({ error: 'Room not found' });
+
+    const isHost = dbRoom.creatorId === userId;
+    const isSelf = String(identity) === String(userId);
+    if (!isHost && !isSelf) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    clearStageRequest(roomName, identity);
+
+    // Real-time Push via Socket.IO directly to the live room
+    try {
+      const io = req.app.get('io');
+      if (io) {
+        const payload = {
+          roomName,
+          identity: String(identity),
+        };
+        io.to(`live_room_${roomName}`).emit('withdraw_stage_request', payload);
+      }
+    } catch (sockErr) {
+      console.warn('Socket stage request withdraw emit error:', sockErr.message);
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Failed to dismiss stage request:', err);
+    return res.status(500).json({ error: 'Failed to dismiss stage request' });
+  }
+};
+
+/**
+ * POST /api/livekit/translate
+ * Translates transcriptions in real time using google-translate-api-x
+ */
+const translateText = async (req, res) => {
+  try {
+    const { text, from, to } = req.body;
+    if (!text) {
+      return res.status(400).json({ error: 'text parameter is required' });
+    }
+
+    const result = await translate(text, { 
+      from: from || 'auto', 
+      to: to || 'en' 
+    });
+
+    return res.json({ 
+      translatedText: result.text 
+    });
+  } catch (err) {
+    console.error('LiveKit translate endpoint error:', err);
+    return res.status(500).json({ error: 'Translation failed' });
+  }
+};
+
+module.exports = { 
+  getToken, 
+  getRooms, 
+  deleteRoom, 
+  getParticipants, 
+  kickParticipant, 
+  promoteParticipant, 
+  demoteParticipant, 
+  translateText,
+  submitStageRequest,
+  getStageRequests,
+  dismissStageRequest,
+  removeApprovedSpeaker,
+};
